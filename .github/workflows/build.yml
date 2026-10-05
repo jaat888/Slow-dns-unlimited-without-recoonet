@@ -16,17 +16,77 @@ jobs:
         with: { go-version: stable }
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: 8.7 }
+
+      - name: project folder dhoondo
+        run: |
+          if [ -f settings.gradle.kts ]; then D=.
+          elif [ -f SlowDNS/settings.gradle.kts ]; then D=SlowDNS
+          else echo "settings.gradle.kts nahi mili"; ls -la; exit 1; fi
+          echo "PD=$GITHUB_WORKSPACE/$D" >> $GITHUB_ENV
+          mkdir -p "$GITHUB_WORKSPACE/$D/app/src/main/jniLibs/arm64-v8a"
+          echo "project = $D"
+
       - name: dnstt-client
         run: |
-          git clone https://www.bamsoftware.com/git/dnstt.git
-          mkdir -p app/src/main/jniLibs/arm64-v8a
-          cd dnstt/dnstt-client
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o $GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libdnstt.so .
+          OUT=$PD/app/src/main/jniLibs/arm64-v8a
+          for i in 1 2 3; do
+            rm -rf $RUNNER_TEMP/dnstt
+            git clone https://www.bamsoftware.com/git/dnstt.git $RUNNER_TEMP/dnstt && break
+            echo "clone fail, retry $i"; sleep 5
+          done
+          test -d $RUNNER_TEMP/dnstt/dnstt-client || { echo "dnstt clone nahi hua"; exit 1; }
+          cd $RUNNER_TEMP/dnstt/dnstt-client
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o $OUT/libdnstt.so .
+          # Low-load binary: polling dheema (patch match na hua to normal binary hi copy hota hai)
+          sed -i -E 's/initPollDelay([[:space:]]*)=([[:space:]]*)500 \* time\.Millisecond/initPollDelay\1=\2 1 * time.Second/; s/maxPollDelay([[:space:]]*)=([[:space:]]*)10 \* time\.Second/maxPollDelay\1=\2 30 * time.Second/; s/pollLimit([[:space:]]*)=([[:space:]]*)16/pollLimit\1=\2 4/' *.go
+          if git diff --quiet; then
+            echo "WARNING: polling patch match nahi hua, low-load = normal"
+            cp $OUT/libdnstt.so $OUT/libdnstt_low.so
+          else
+            git diff --stat
+            CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o $OUT/libdnstt_low.so .
+          fi
+          ls -la $OUT
+
       - name: hev-socks5-tunnel
         run: |
-          git clone --recursive https://github.com/heiher/hev-socks5-tunnel
-          cd hev-socks5-tunnel
-          $ANDROID_NDK_HOME/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=Android.mk APP_ABI=arm64-v8a APP_PLATFORM=android-26 NDK_LIBS_OUT=$GITHUB_WORKSPACE/app/src/main/jniLibs "APP_CFLAGS=-O3 -DPKGNAME=hev/htproxy -DCLSNAME=TProxyService"
-      - run: gradle assembleDebug
+          # Official tareeqa: alag project, jni/ ke andar clone, phir ndk-build
+          NDK=${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}}
+          echo "NDK = $NDK"
+          test -x "$NDK/ndk-build" || { echo "ndk-build nahi mila"; exit 1; }
+          H=$RUNNER_TEMP/hevproj
+          mkdir -p $H/jni
+          for i in 1 2 3; do
+            rm -rf $H/jni/hev-socks5-tunnel
+            git clone --recursive https://github.com/heiher/hev-socks5-tunnel $H/jni/hev-socks5-tunnel && break
+            echo "clone fail, retry $i"; sleep 5
+          done
+          echo 'include $(call all-subdir-makefiles)' > $H/jni/Android.mk
+          printf 'APP_ABI := arm64-v8a\nAPP_PLATFORM := android-26\nAPP_CFLAGS := -O3 -DPKGNAME=hev/htproxy -DCLSNAME=TProxyService\n' > $H/jni/Application.mk
+          cd $H
+          "$NDK/ndk-build" -j$(nproc)
+          find $H/libs -name '*.so'
+          SO=$(find $H/libs -name 'libhev-socks5-tunnel.so' | head -1)
+          test -s "$SO" || { echo "libhev-socks5-tunnel.so bana hi nahi"; exit 1; }
+          cp "$SO" $PD/app/src/main/jniLibs/arm64-v8a/
+
+      - name: jniLibs check (gradle se pehle)
+        run: |
+          ls -la $PD/app/src/main/jniLibs/arm64-v8a/
+          for f in libdnstt.so libdnstt_low.so libhev-socks5-tunnel.so; do
+            test -s $PD/app/src/main/jniLibs/arm64-v8a/$f || { echo "$f GAYAB hai"; exit 1; }
+          done
+
+      - name: gradle assembleDebug
+        run: gradle -p "$PD" assembleDebug --stacktrace
+
+      - name: APK ke andar libs check
+        run: |
+          APK=$(ls $PD/app/build/outputs/apk/debug/*.apk | head -1)
+          unzip -l "$APK" | grep "lib/"
+          for f in libdnstt.so libdnstt_low.so libhev-socks5-tunnel.so; do
+            unzip -l "$APK" | grep -q "lib/arm64-v8a/$f" || { echo "APK mein $f nahi hai"; exit 1; }
+          done
+
       - uses: actions/upload-artifact@v4
-        with: { name: MolladDNS-apk, path: app/build/outputs/apk/debug/*.apk }
+        with: { name: MolladDNS-apk, path: "${{ env.PD }}/app/build/outputs/apk/debug/*.apk" }
