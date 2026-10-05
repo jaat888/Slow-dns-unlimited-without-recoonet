@@ -49,7 +49,7 @@ class VpnSvc : VpnService() {
 
   override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
     getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("v", "VPN", NotificationManager.IMPORTANCE_LOW))
-    try { startForeground(1, notif(if (i?.action == "stop") "Stopping..." else "Connecting...")) } catch (e: Exception) {}
+    try { startForeground(1, notif(if (i?.action == "stop") "Stopping..." else "Connecting...")) } catch (e: Throwable) { LogBus.add("notification/foreground error: ${e.message}") }
     if (i?.action == "stop") { stop(); try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) {}; stopSelf(); return START_NOT_STICKY }
     if (on.compareAndSet(false, true)) {
       stopped.set(false)
@@ -90,7 +90,7 @@ class VpnSvc : VpnService() {
     jobs.forEachIndexed { idx, j -> thread { nap(idx * 400L, g); if (alive(g)) try { j() } catch (e: Throwable) { LogBus.add("tunnel error: ${e.message}") } } }
     thread {
       val nm = getSystemService(NotificationManager::class.java)
-      while (alive(g)) { nm.notify(1, notif("${connected()} / $total tunnel connected")); nap(5000, g) }
+      while (alive(g)) { try { nm.notify(1, notif("${connected()} / $total tunnel connected")) } catch (e: Throwable) {}; nap(5000, g) }
     }
     // pehla tunnel connect hote hi VPN chalu, baaki background mein judte rahenge
     while (alive(g) && sess.none { it.isConnected }) Thread.sleep(500)
