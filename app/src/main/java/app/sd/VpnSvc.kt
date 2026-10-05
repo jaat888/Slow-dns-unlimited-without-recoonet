@@ -48,14 +48,17 @@ class VpnSvc : VpnService() {
       .setSmallIcon(android.R.drawable.ic_lock_lock).setOngoing(true).build()
 
   override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
+    LogBus.setup(filesDir)
     getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("v", "VPN", NotificationManager.IMPORTANCE_LOW))
     try { startForeground(1, notif(if (i?.action == "stop") "Stopping..." else "Connecting...")) } catch (e: Throwable) { LogBus.add("notification/foreground error: ${e.message}") }
+    // system ne service restart ki (null intent) -> khud start na ho, warna crash par loop banta hai
+    if (i == null) { try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) {}; stopSelf(); return START_NOT_STICKY }
     if (i?.action == "stop") { stop(); try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) {}; stopSelf(); return START_NOT_STICKY }
     if (on.compareAndSet(false, true)) {
       stopped.set(false)
       running = true; inst = this
       LogBus.add("VPN service start")
-      LogBus.add("abi: " + android.os.Build.SUPPORTED_ABIS.joinToString() + " | libs: " + (File(applicationInfo.nativeLibraryDir).list()?.joinToString() ?: "KHALI"))
+      LogBus.add("android " + android.os.Build.VERSION.SDK_INT + " | abi: " + android.os.Build.SUPPORTED_ABIS.joinToString() + " | libs: " + (File(applicationInfo.nativeLibraryDir).list()?.joinToString() ?: "KHALI"))
       wl = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sd:w").also { it.acquire() }
       val g = gen.incrementAndGet(); pool = Executors.newCachedThreadPool()
       thread { try { begin(g) } catch (e: Throwable) { LogBus.add("start error: ${e.message}") } }
@@ -100,12 +103,15 @@ class VpnSvc : VpnService() {
       if (!alive(g)) return
       val b = Builder().setSession("Mollad DNS").addAddress("10.10.0.2", 32).addRoute("0.0.0.0", 0).addDnsServer("1.1.1.1").setMtu(1500)
       try { b.addDisallowedApplication(packageName) } catch (e: Exception) {}
+      LogBus.add("VPN establish...")
       val t2 = b.establish()
       if (t2 == null) { LogBus.add("VPN permission/establish fail"); return }
       tun = t2
       val cfg = File(filesDir, "h.yml")
       cfg.writeText("tunnel:\n  mtu: 1500\n  ipv4: 10.10.0.2\nsocks5:\n  port: 3000\n  address: 127.0.0.1\n  udp: 'udp'\n")
+      LogBus.add("hev start (fd=${t2.fd})...")
       TProxyService.TProxyStartService(cfg.path, t2.fd); hevOn = true
+      LogBus.add("hev start OK")
     }
   }
 
@@ -215,6 +221,7 @@ class VpnSvc : VpnService() {
       while (!c.isClosed) {
         try {
           val b = ByteArray(2048); val pk = DatagramPacket(b, b.size); d.receive(pk)
+          if (pk.length <= 10 || b[3].toInt() != 1 || (((b[8].toInt() and 0xff) shl 8) or (b[9].toInt() and 0xff)) != 53) continue
           val q = b.copyOfRange(10, pk.length)
           pool.execute { try { val out = byteArrayOf(0, 0, 0, 1, 1, 1, 1, 1, 0, 53) + dns(q); d.send(DatagramPacket(out, out.size, pk.address, pk.port)) } catch (e: Exception) {} }
         } catch (e: Exception) { break }

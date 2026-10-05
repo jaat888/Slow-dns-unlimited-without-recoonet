@@ -367,13 +367,12 @@ Tips
 
   override fun onCreate(b: Bundle?) {
     super.onCreate(b)
-    // crash ho to stack file mein likho, agli baar Logs mein dikhao
+    // log disk par bachta hai; Java crash ka stack bhi usme likha jata hai
     try {
-      val cf = java.io.File(filesDir, "crash.txt")
-      if (cf.exists()) { LogBus.add("PICHLA CRASH: " + cf.readText().take(1200)); cf.delete() }
+      LogBus.setup(filesDir)
       val old = Thread.getDefaultUncaughtExceptionHandler()
       Thread.setDefaultUncaughtExceptionHandler { t, e ->
-        try { cf.writeText(android.util.Log.getStackTraceString(e)) } catch (x: Throwable) {}
+        try { LogBus.add("CRASH (${t.name}): " + android.util.Log.getStackTraceString(e).take(1500)) } catch (x: Throwable) {}
         old?.uncaughtException(t, e)
       }
     } catch (e: Throwable) {}
