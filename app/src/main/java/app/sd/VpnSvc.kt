@@ -55,7 +55,7 @@ class VpnSvc : VpnService() {
       stopped.set(false)
       running = true; inst = this
       LogBus.add("VPN service start")
-      LogBus.add("libs: " + (File(applicationInfo.nativeLibraryDir).list()?.joinToString() ?: "KHALI"))
+      LogBus.add("abi: " + android.os.Build.SUPPORTED_ABIS.joinToString() + " | libs: " + (File(applicationInfo.nativeLibraryDir).list()?.joinToString() ?: "KHALI"))
       wl = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sd:w").also { it.acquire() }
       val g = gen.incrementAndGet(); pool = Executors.newCachedThreadPool()
       thread { try { begin(g) } catch (e: Throwable) { LogBus.add("start error: ${e.message}") } }
