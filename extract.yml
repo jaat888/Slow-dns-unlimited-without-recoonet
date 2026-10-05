@@ -1,0 +1,33 @@
+name: extract
+on:
+  push:
+    paths: ['*.zip']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Zip extract karke project root mein rakho
+        run: |
+          shopt -s nullglob
+          zips=(*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then echo "Koi zip nahi mila"; exit 0; fi
+          for z in "${zips[@]}"; do
+            rm -rf /tmp/x && mkdir /tmp/x && unzip -q "$z" -d /tmp/x
+            src=/tmp/x
+            # agar zip ke andar ek hi folder hai (jaise SlowDNS/) to uske andar ka content lo
+            if [ "$(ls -A /tmp/x | wc -l)" -eq 1 ] && [ -d "/tmp/x/$(ls -A /tmp/x)" ]; then src="/tmp/x/$(ls -A /tmp/x)"; fi
+            rm -rf .github/_skip; rm -rf "$src/.github"   # workflow files zip se nahi chalte, haath se dalo
+            rm -rf app build.gradle.kts settings.gradle.kts gradle.properties
+            cp -a "$src"/. .
+            git rm -q --cached "$z" 2>/dev/null || true
+            rm -f "$z"
+          done
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add -A
+          git commit -m "Zip extract ho gaya" || echo "Kuch badla nahi"
+          git push
