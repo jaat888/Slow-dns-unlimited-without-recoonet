@@ -24,12 +24,15 @@ import kotlin.concurrent.thread
 class VpnSvc : VpnService() {
   companion object {
     @Volatile var running = false
+    val NATIVE = Any()
     @Volatile var total = 0
     @Volatile private var inst: VpnSvc? = null
     fun connected(): Int = inst?.sess?.count { it.isConnected } ?: 0
   }
 
   private val on = AtomicBoolean(false)
+  private val stopped = AtomicBoolean(true)
+  @Volatile private var hevOn = false
   private val sess = CopyOnWriteArrayList<Session>()
   private val procs = CopyOnWriteArrayList<Process>()
   private val rr = AtomicInteger()
@@ -45,16 +48,17 @@ class VpnSvc : VpnService() {
       .setSmallIcon(android.R.drawable.ic_lock_lock).setOngoing(true).build()
 
   override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
-    if (i?.action == "stop") { stop(); stopSelf(); return START_NOT_STICKY }
     getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("v", "VPN", NotificationManager.IMPORTANCE_LOW))
-    startForeground(1, notif("Connecting..."))
+    try { startForeground(1, notif(if (i?.action == "stop") "Stopping..." else "Connecting...")) } catch (e: Exception) {}
+    if (i?.action == "stop") { stop(); try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) {}; stopSelf(); return START_NOT_STICKY }
     if (on.compareAndSet(false, true)) {
+      stopped.set(false)
       running = true; inst = this
       LogBus.add("VPN service start")
       LogBus.add("libs: " + (File(applicationInfo.nativeLibraryDir).list()?.joinToString() ?: "KHALI"))
       wl = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sd:w").also { it.acquire() }
       val g = gen.incrementAndGet(); pool = Executors.newCachedThreadPool()
-      thread { begin(g) }
+      thread { try { begin(g) } catch (e: Throwable) { LogBus.add("start error: ${e.message}") } }
     }
     return START_STICKY
   }
@@ -80,10 +84,10 @@ class VpnSvc : VpnService() {
     }
     total = t
     if (t == 0) { LogBus.add("Koi ON account nahi"); stop(); stopSelf(); return }
-    ss = ServerSocket(3000, 50, InetAddress.getByName("127.0.0.1"))
+    ss = ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 3000), 50) }
     thread { while (alive(g)) { try { val c = ss!!.accept(); pool.execute { try { handle(c) } catch (e: Exception) { c.close() } } } catch (e: Exception) { break } } }
     // tunnel ek ke baad ek start hote hain (CPU/resolver par ek saath load nahi)
-    jobs.forEachIndexed { idx, j -> thread { nap(idx * 400L, g); if (alive(g)) j() } }
+    jobs.forEachIndexed { idx, j -> thread { nap(idx * 400L, g); if (alive(g)) try { j() } catch (e: Throwable) { LogBus.add("tunnel error: ${e.message}") } } }
     thread {
       val nm = getSystemService(NotificationManager::class.java)
       while (alive(g)) { nm.notify(1, notif("${connected()} / $total tunnel connected")); nap(5000, g) }
@@ -92,24 +96,33 @@ class VpnSvc : VpnService() {
     while (alive(g) && sess.none { it.isConnected }) Thread.sleep(500)
     if (!alive(g)) return
     LogBus.add("Pehla tunnel connect - VPN chalu")
-    val b = Builder().setSession("Mollad DNS").addAddress("10.10.0.2", 32).addRoute("0.0.0.0", 0).addDnsServer("1.1.1.1").setMtu(1500)
-    b.addDisallowedApplication(packageName)
-    tun = b.establish() ?: return
-    val cfg = File(filesDir, "h.yml")
-    cfg.writeText("tunnel:\n  mtu: 1500\n  ipv4: 10.10.0.2\nsocks5:\n  port: 3000\n  address: 127.0.0.1\n  udp: 'udp'\n")
-    TProxyService.TProxyStartService(cfg.path, tun!!.fd)
+    synchronized(NATIVE) {
+      if (!alive(g)) return
+      val b = Builder().setSession("Mollad DNS").addAddress("10.10.0.2", 32).addRoute("0.0.0.0", 0).addDnsServer("1.1.1.1").setMtu(1500)
+      try { b.addDisallowedApplication(packageName) } catch (e: Exception) {}
+      val t2 = b.establish()
+      if (t2 == null) { LogBus.add("VPN permission/establish fail"); return }
+      tun = t2
+      val cfg = File(filesDir, "h.yml")
+      cfg.writeText("tunnel:\n  mtu: 1500\n  ipv4: 10.10.0.2\nsocks5:\n  port: 3000\n  address: 127.0.0.1\n  udp: 'udp'\n")
+      TProxyService.TProxyStartService(cfg.path, t2.fd); hevOn = true
+    }
   }
 
   private fun stop() {
-    if (!on.getAndSet(false) && !running) return
-    on.set(false); gen.incrementAndGet(); running = false; inst = null; total = 0
+    if (!stopped.compareAndSet(false, true)) return
+    on.set(false); gen.incrementAndGet()
+    if (inst === this) { running = false; inst = null; total = 0 }
     try { pool.shutdownNow() } catch (e: Exception) {}
     LogBus.add("VPN stop")
     try { wl?.release() } catch (e: Exception) {}
     wl = null
-    try { TProxyService.TProxyStopService() } catch (e: Throwable) {}
+    synchronized(NATIVE) {
+      if (hevOn) { try { TProxyService.TProxyStopService() } catch (e: Throwable) {}; hevOn = false }
+      try { tun?.close() } catch (e: Exception) {}
+      tun = null
+    }
     try { ss?.close() } catch (e: Exception) {}
-    try { tun?.close() } catch (e: Exception) {}
     procs.forEach { it.destroy() }; procs.clear()
     sess.forEach { it.disconnect() }; sess.clear(); busy.clear()
   }

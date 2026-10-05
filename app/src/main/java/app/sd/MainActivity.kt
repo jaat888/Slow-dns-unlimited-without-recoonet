@@ -43,8 +43,10 @@ class MainActivity : Activity() {
   private lateinit var accBox: LinearLayout
   private lateinit var statusTv: TextView
   private lateinit var hintTv: TextView
-  private lateinit var startB: Button
-  private lateinit var stopB: Button
+  private lateinit var toggleB: Button
+  private var pending: Boolean? = null
+  private var pendingT = 0L
+  private var lastTap = 0L
   private lateinit var addB: Button
   private lateinit var logTv: TextView
   private lateinit var logSv: ScrollView
@@ -139,12 +141,25 @@ class MainActivity : Activity() {
       try { startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))) } catch (e: Exception) {}
   }
 
+  // Ek hi button: START <-> STOP. Jaldi jaldi tap karne par dobara tap 1.5 sec tak ignore.
+  private fun toggle() {
+    val now = System.currentTimeMillis()
+    if (now - lastTap < 1500 || pending != null) return
+    lastTap = now
+    if (VpnSvc.running) {
+      pending = false; pendingT = now
+      startService(Intent(this, VpnSvc::class.java).setAction("stop"))
+    } else start()
+    refresh()
+  }
+
   private fun start() {
     save()
     if (accs.none { it.sw.isChecked && valid(it) }) { toast("Kam se kam ek account ON karo aur poora bharo"); return }
     accs.forEachIndexed { i, a -> if (a.sw.isChecked && !valid(a)) toast("Account ${i + 1} adhura hai, skip hoga") }
     askBackground()
     val i = VpnService.prepare(this)
+    pending = true; pendingT = System.currentTimeMillis()
     if (i != null) startActivityForResult(i, 1) else begin()
   }
 
@@ -164,8 +179,7 @@ class MainActivity : Activity() {
   private fun buildHome(): View {
     val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(20), dp(16), dp(24)) }
     statusTv = tv("", 15f, acc, true).apply { layoutParams = lp(16) }
-    startB = btn("START") { start() }
-    stopB = btn("STOP", red) { startService(Intent(this, VpnSvc::class.java).setAction("stop")) }
+    toggleB = btn("START") { toggle() }
     fun big() = tv("0", 22f, fg, true)
     fun sm() = tv("", 12f, sub)
     upBig = big(); upSm = sm(); dnBig = big(); dnSm = sm(); coBig = big(); coSm = sm(); tmBig = big(); tmSm = sm()
@@ -173,7 +187,7 @@ class MainActivity : Activity() {
     col.addView(head)
     col.addView(row(statCard("Upload", upBig, upSm), statCard("Download", dnBig, dnSm)))
     col.addView(row(statCard("Connections", coBig, coSm), statCard("Time", tmBig, tmSm)))
-    col.addView(statusTv); col.addView(row(startB, stopB))
+    col.addView(statusTv); col.addView(row(toggleB))
     return ScrollView(this).apply { addView(col) }
   }
 
@@ -318,7 +332,16 @@ Tips
   private fun refresh() {
     val r = VpnSvc.running
     accs.forEach { a -> a.ctl.forEach { it.isEnabled = !r } }
-    addB.isEnabled = !r; startB.isEnabled = !r; stopB.isEnabled = r
+    addB.isEnabled = !r
+    val nowT = System.currentTimeMillis()
+    if (pending != null && (pending == r || nowT - pendingT > 4000)) pending = null
+    if (pending != null) { toggleB.text = "..."; toggleB.isEnabled = false }
+    else {
+      toggleB.isEnabled = true
+      toggleB.text = if (r) "STOP" else "START"
+      toggleB.setTextColor(if (r) 0xFFFFFFFF.toInt() else 0xFF000000.toInt())
+      toggleB.background = rr(if (r) red else acc, 10)
+    }
     statusTv.text = if (r) "Chal raha hai" else "VPN band hai"
     hintTv.text = if (r) "Account ya ON/OFF badalne ke liye pehle STOP karo" else ""
     val now = System.currentTimeMillis(); val u = Stats.up.get(); val d = Stats.down.get()
@@ -366,5 +389,5 @@ Tips
   override fun onDestroy() { super.onDestroy(); h.removeCallbacksAndMessages(null) }
 
   private fun begin() { startForegroundService(Intent(this, VpnSvc::class.java)) }
-  override fun onActivityResult(r: Int, c: Int, d: Intent?) { if (c == RESULT_OK) begin() }
+  override fun onActivityResult(r: Int, c: Int, d: Intent?) { if (c == RESULT_OK) begin() else pending = null }
 }
