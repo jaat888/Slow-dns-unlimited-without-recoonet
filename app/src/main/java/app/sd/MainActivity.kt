@@ -204,14 +204,22 @@ class MainActivity : Activity() {
     val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(20), dp(16), dp(24)) }
     buildAccounts(col)
     col.addView(tv("Settings", 22f, fg, true).apply { layoutParams = lp(32) })
-    col.addView(tv("Connection timeout (seconds)", 15f, fg, true).apply { layoutParams = lp(12) })
-    col.addView(tv("Ek tunnel itne second tak connect hone ka wait karega, phir fail maan ke dobara try karega. Jo account der se connect hota hai uske liye zyada rakho (5 - 300).", 12f, sub))
-    val to = et("Timeout", P.getInt("to", 20).toString()).apply { inputType = InputType.TYPE_CLASS_NUMBER }
-    col.addView(to)
-    col.addView(row(btn("Save timeout") {
-      val v = (to.text.toString().toIntOrNull() ?: 20).coerceIn(5, 300)
-      to.setText(v.toString()); P.edit().putInt("to", v).apply(); toast("Timeout $v sec save hua (agle connect se lagu)")
-    }))
+    fun numSet(title: String, desc: String, key: String, def: Int, lo: Int, hi: Int) {
+      col.addView(tv(title, 15f, fg, true).apply { layoutParams = lp(20) })
+      col.addView(tv(desc, 12f, sub))
+      val e = et("$lo - $hi", P.getInt(key, def).toString()).apply { inputType = InputType.TYPE_CLASS_NUMBER }
+      col.addView(e)
+      col.addView(row(btn("Save") {
+        val v = (e.text.toString().toIntOrNull() ?: def).coerceIn(lo, hi)
+        e.setText(v.toString()); P.edit().putInt(key, v).apply(); toast("Save hua: $v (agle connect se lagu)")
+      }))
+    }
+    numSet("Connection timeout (seconds)", "Ek tunnel itne second tak connect hone ka wait karega, phir fail maan ke dobara try karega. Jo account der se connect hota hai uske liye zyada rakho.", "to", 20, 5, 300)
+    numSet("Retry max wait (seconds)", "Fail hone par tunnel 3 sec baad retry karta hai, phir 6, 12, 24... is limit tak. Retry kabhi band nahi hota, sirf wait badhta hai taaki server aur battery par load na pade. 3 rakho to hamesha 3 sec mein retry.", "rmax", 30, 3, 120)
+    val low = Switch(this).apply { isChecked = P.getBoolean("low", false); text = "Low-load mode"; setTextColor(fg); layoutParams = lp(24)
+      setOnCheckedChangeListener { _, c -> P.edit().putBoolean("low", c).apply(); toast(if (c) "Low-load ON (agle START se)" else "Low-load OFF (agle START se)") } }
+    col.addView(low)
+    col.addView(tv("dnstt khali hone par kam poochta hai, isse data aur battery ka load kam hota hai. Nuksan: jawab thoda der se aa sakta hai aur download speed kuch kam ho sakti hai. Agle START se lagu.", 12f, sub))
     col.addView(tv("Max speed (Mbps)", 15f, fg, true).apply { layoutParams = lp(24) })
     col.addView(tv("Switch ON karke 1 se 100 Mbps tak limit lagao. Upload aur download dono is se zyada nahi jayenge. OFF = bina limit.", 12f, sub))
     val lim = Switch(this).apply { isChecked = P.getBoolean("lim", false); text = "Speed limit ON"; setTextColor(fg); layoutParams = lp(8) }
@@ -277,7 +285,9 @@ Home par Upload, Download speed (Mbps) aur total data, kitne tunnel connected ha
 Settings
 - Accounts: sab account yahin banate aur badalte hain.
 - Max speed: 1 se 100 Mbps tak limit lagao, upload aur download dono par. OFF rakho to bina limit.
-- Connection timeout: ek tunnel kitni der connect hone ka wait kare. Jo server der se connect hota hai uske liye zyada rakho.
+- Connection timeout: ek tunnel kitni der connect hone ka wait kare.
+- Retry max wait: fail hone par retry ka wait 3s se badhta hai is limit tak. Retry kabhi band nahi hota.
+- Low-load mode: dnstt ka polling dheema, load kam, speed thodi kam ho sakti hai.
 - Theme: Black (Dark) ya Light.
 - Background permission: battery optimization band karne ki aur notification ki permission. Isse app background mein chalta rahega.
 
@@ -351,7 +361,8 @@ Tips
     askBackground()
   }
 
-  override fun onPause() { super.onPause(); save() }
+  override fun onPause() { super.onPause(); save(); h.removeCallbacksAndMessages(null) }
+  override fun onResume() { super.onResume(); refresh() }
   override fun onDestroy() { super.onDestroy(); h.removeCallbacksAndMessages(null) }
 
   private fun begin() { startForegroundService(Intent(this, VpnSvc::class.java)) }

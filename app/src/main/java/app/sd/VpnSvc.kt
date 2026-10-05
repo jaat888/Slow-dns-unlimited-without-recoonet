@@ -13,7 +13,10 @@ import hev.htproxy.TProxyService
 import org.json.JSONArray
 import java.io.*
 import java.net.*
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -30,6 +33,9 @@ class VpnSvc : VpnService() {
   private val sess = CopyOnWriteArrayList<Session>()
   private val procs = CopyOnWriteArrayList<Process>()
   private val rr = AtomicInteger()
+  private val gen = AtomicInteger()
+  private val busy = ConcurrentHashMap<Session, AtomicInteger>()
+  @Volatile private var pool: ExecutorService = Executors.newCachedThreadPool()
   private var tun: ParcelFileDescriptor? = null
   private var ss: ServerSocket? = null
   private var wl: PowerManager.WakeLock? = null
@@ -45,14 +51,20 @@ class VpnSvc : VpnService() {
     if (on.compareAndSet(false, true)) {
       running = true; inst = this
       LogBus.add("VPN service start")
+      LogBus.add("libs: " + (File(applicationInfo.nativeLibraryDir).list()?.joinToString() ?: "KHALI"))
       wl = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sd:w").also { it.acquire() }
-      thread { begin() }
+      val g = gen.incrementAndGet(); pool = Executors.newCachedThreadPool()
+      thread { begin(g) }
     }
     return START_STICKY
   }
   override fun onDestroy() { stop() }
 
-  private fun begin() {
+  private fun alive(g: Int) = on.get() && gen.get() == g
+
+  private fun nap(ms: Long, g: Int) { var t = 0L; while (t < ms && alive(g)) { Thread.sleep(250); t += 250 } }
+
+  private fun begin(g: Int) {
     Stats.reset(); Limit.load(getSharedPreferences("a", 0))
     val arr = try { JSONArray(getSharedPreferences("a", 0).getString("acc2", "[]")) } catch (e: Exception) { JSONArray() }
     var k = 0; var t = 0
@@ -64,20 +76,21 @@ class VpnSvc : VpnService() {
       if (ns.isEmpty() || pk.isEmpty() || u.isEmpty() || p.isEmpty() || d.isEmpty()) { LogBus.add("Account ${a + 1} adhura - skip"); continue }
       val n = o.optInt("n", 1).coerceIn(1, 20)
       t += n
-      for (j in 1..n) { k++; val port = 2000 + k; val label = "A${a + 1}#$j"; jobs.add { tunnel(ns, pk, u, p, d, port, label) } }
+      for (j in 1..n) { k++; val port = 2000 + k; val label = "A${a + 1}#$j"; jobs.add { tunnel(ns, pk, u, p, d, port, label, g) } }
     }
     total = t
     if (t == 0) { LogBus.add("Koi ON account nahi"); stop(); stopSelf(); return }
     ss = ServerSocket(3000, 50, InetAddress.getByName("127.0.0.1"))
-    thread { while (on.get()) { try { val c = ss!!.accept(); thread { try { handle(c) } catch (e: Exception) { c.close() } } } catch (e: Exception) { break } } }
-    jobs.forEach { j -> thread { j() } }
+    thread { while (alive(g)) { try { val c = ss!!.accept(); pool.execute { try { handle(c) } catch (e: Exception) { c.close() } } } catch (e: Exception) { break } } }
+    // tunnel ek ke baad ek start hote hain (CPU/resolver par ek saath load nahi)
+    jobs.forEachIndexed { idx, j -> thread { nap(idx * 400L, g); if (alive(g)) j() } }
     thread {
       val nm = getSystemService(NotificationManager::class.java)
-      while (on.get()) { nm.notify(1, notif("${connected()} / $total tunnel connected")); Thread.sleep(3000) }
+      while (alive(g)) { nm.notify(1, notif("${connected()} / $total tunnel connected")); nap(5000, g) }
     }
     // pehla tunnel connect hote hi VPN chalu, baaki background mein judte rahenge
-    while (on.get() && sess.none { it.isConnected }) Thread.sleep(500)
-    if (!on.get()) return
+    while (alive(g) && sess.none { it.isConnected }) Thread.sleep(500)
+    if (!alive(g)) return
     LogBus.add("Pehla tunnel connect - VPN chalu")
     val b = Builder().setSession("Mollad DNS").addAddress("10.10.0.2", 32).addRoute("0.0.0.0", 0).addDnsServer("1.1.1.1").setMtu(1500)
     b.addDisallowedApplication(packageName)
@@ -89,7 +102,8 @@ class VpnSvc : VpnService() {
 
   private fun stop() {
     if (!on.getAndSet(false) && !running) return
-    on.set(false); running = false; inst = null; total = 0
+    on.set(false); gen.incrementAndGet(); running = false; inst = null; total = 0
+    try { pool.shutdownNow() } catch (e: Exception) {}
     LogBus.add("VPN stop")
     try { wl?.release() } catch (e: Exception) {}
     wl = null
@@ -97,76 +111,99 @@ class VpnSvc : VpnService() {
     try { ss?.close() } catch (e: Exception) {}
     try { tun?.close() } catch (e: Exception) {}
     procs.forEach { it.destroy() }; procs.clear()
-    sess.forEach { it.disconnect() }; sess.clear()
+    sess.forEach { it.disconnect() }; sess.clear(); busy.clear()
   }
 
   private fun resolver(r: String) = if (r.contains(":")) r else "$r:53"
 
-  // Har tunnel apne account ke ek fixed UDP DNS se chalta hai. Limit ke bina baar baar try karta hai.
-  private fun tunnel(ns: String, pub: String, user: String, pass: String, dns: String, port: Int, label: String) {
-    val bin = File(applicationInfo.nativeLibraryDir, "libdnstt.so").path
+  // Har tunnel apne account ke ek fixed UDP DNS se chalta hai. Retry kabhi band nahi hota,
+  // bas fail hone par wait 3s se badhta hai (Settings ke "Retry max wait" tak).
+  private fun tunnel(ns: String, pub: String, user: String, pass: String, dns: String, port: Int, label: String, g: Int) {
     val rs = resolver(dns)
-    while (on.get()) {
+    var wait = 3000L
+    while (alive(g)) {
       var p: Process? = null
       var s: Session? = null
+      val pr = getSharedPreferences("a", 0)
+      val maxMs = pr.getInt("rmax", 30).coerceIn(3, 120) * 1000L
       try {
-        val to = getSharedPreferences("a", 0).getInt("to", 20).coerceIn(5, 300) * 1000
+        val to = pr.getInt("to", 20).coerceIn(5, 300) * 1000
+        var bin = File(applicationInfo.nativeLibraryDir, if (pr.getBoolean("low", false)) "libdnstt_low.so" else "libdnstt.so")
+        if (!bin.exists()) bin = File(applicationInfo.nativeLibraryDir, "libdnstt.so")
         LogBus.add("[$label] dnstt start via $rs")
-        p = ProcessBuilder(bin, "-udp", rs, "-pubkey", pub, ns, "127.0.0.1:$port")
+        p = ProcessBuilder(bin.path, "-udp", rs, "-pubkey", pub, ns, "127.0.0.1:$port")
           .redirectErrorStream(true).redirectOutput(File("/dev/null")).start()
         procs.add(p)
-        Thread.sleep(3000)
+        nap(3000, g)
         s = JSch().getSession(user, "127.0.0.1", port)
         s.setPassword(pass); s.setConfig("StrictHostKeyChecking", "no")
-        s.setServerAliveInterval(30000); s.setServerAliveCountMax(4)
-        s.connect(to); sess.add(s)
+        // network/airplane toggle par jaldi na girao: ~4 min tak sabr
+        s.setServerAliveInterval(30000); s.setServerAliveCountMax(8)
+        s.connect(to); sess.add(s); busy[s] = AtomicInteger()
+        wait = 3000L
         LogBus.add("[$label] connected")
-        while (on.get() && s.isConnected && p.isAlive) Thread.sleep(2000)
-        if (on.get()) LogBus.add("[$label] tuta, dobara connect")
+        while (alive(g) && s.isConnected && p.isAlive) Thread.sleep(2000)
+        if (alive(g)) LogBus.add("[$label] tuta, dobara connect")
       } catch (e: Exception) {
-        if (on.get()) LogBus.add("[$label] fail: ${e.message} - retry")
+        if (alive(g)) LogBus.add("[$label] fail: ${e.message} - ${wait / 1000}s baad retry")
       }
-      s?.let { sess.remove(it); it.disconnect() }
+      s?.let { sess.remove(it); busy.remove(it); it.disconnect() }
       p?.let { procs.remove(it); it.destroy() }
-      if (on.get()) Thread.sleep(3000)
+      nap(wait, g)
+      wait = (wait * 2).coerceAtMost(maxMs)
     }
   }
 
-  private fun pick(): Session? {
+  // Sabse kam busy tunnel chunta hai (barabar hone par baari-baari)
+  private fun acquire(): Session? {
     val l = sess.filter { it.isConnected }
-    return if (l.isEmpty()) null else l[Math.floorMod(rr.getAndIncrement(), l.size)]
+    if (l.isEmpty()) return null
+    val st = Math.floorMod(rr.getAndIncrement(), l.size)
+    var best: Session? = null; var bc = Int.MAX_VALUE
+    for (k in l.indices) { val x = l[(st + k) % l.size]; val c = busy[x]?.get() ?: 0; if (c < bc) { bc = c; best = x } }
+    best?.let { busy.getOrPut(it) { AtomicInteger() }.incrementAndGet() }
+    return best
   }
+
+  private fun release(s: Session) { busy[s]?.decrementAndGet() }
 
   private fun handle(c: Socket) {
-    val i = DataInputStream(c.getInputStream()); val o = c.getOutputStream()
-    i.readByte(); i.skipBytes(i.readUnsignedByte()); o.write(byteArrayOf(5, 0))
-    i.readByte(); val cmd = i.readByte().toInt(); i.readByte()
-    val host = when (i.readUnsignedByte()) {
-      1 -> { val b = ByteArray(4); i.readFully(b); InetAddress.getByAddress(b).hostAddress }
-      3 -> { val b = ByteArray(i.readUnsignedByte()); i.readFully(b); String(b) }
-      else -> { val b = ByteArray(16); i.readFully(b); InetAddress.getByAddress(b).hostAddress }
+    var held: Session? = null
+    try {
+      val i = DataInputStream(c.getInputStream()); val o = c.getOutputStream()
+      i.readByte(); i.skipBytes(i.readUnsignedByte()); o.write(byteArrayOf(5, 0))
+      i.readByte(); val cmd = i.readByte().toInt(); i.readByte()
+      val host = when (i.readUnsignedByte()) {
+        1 -> { val b = ByteArray(4); i.readFully(b); InetAddress.getByAddress(b).hostAddress }
+        3 -> { val b = ByteArray(i.readUnsignedByte()); i.readFully(b); String(b) }
+        else -> { val b = ByteArray(16); i.readFully(b); InetAddress.getByAddress(b).hostAddress }
+      }
+      val port = i.readUnsignedShort()
+      if (cmd == 3) { udp(c, o); return }
+      val sx = acquire() ?: return
+      held = sx
+      val ch = sx.openChannel("direct-tcpip") as ChannelDirectTCPIP
+      ch.setHost(host); ch.setPort(port); ch.setInputStream(CIn(i)); ch.setOutputStream(COut(o))
+      o.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+      ch.connect(15000)
+      while (!ch.isClosed && !c.isClosed) Thread.sleep(1000)
+      ch.disconnect()
+    } finally {
+      held?.let { release(it) }
+      try { c.close() } catch (e: Exception) {}
     }
-    val port = i.readUnsignedShort()
-    if (cmd == 3) { udp(c, o); return }
-    val s = pick() ?: run { c.close(); return }
-    val ch = s.openChannel("direct-tcpip") as ChannelDirectTCPIP
-    ch.setHost(host); ch.setPort(port); ch.setInputStream(CIn(i)); ch.setOutputStream(COut(o))
-    o.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
-    ch.connect(15000)
-    while (!ch.isClosed && !c.isClosed) Thread.sleep(500)
-    c.close()
   }
 
   // DNS (UDP 53) ko SSH ke andar TCP DNS bana ke bhejta hai
   private fun udp(c: Socket, o: OutputStream) {
     val d = DatagramSocket(0, InetAddress.getByName("127.0.0.1")); val pt = d.localPort
     o.write(byteArrayOf(5, 0, 0, 1, 127, 0, 0, 1, (pt shr 8).toByte(), pt.toByte()))
-    thread {
+    pool.execute {
       while (!c.isClosed) {
         try {
           val b = ByteArray(2048); val pk = DatagramPacket(b, b.size); d.receive(pk)
           val q = b.copyOfRange(10, pk.length)
-          thread { try { val out = byteArrayOf(0, 0, 0, 1, 1, 1, 1, 1, 0, 53) + dns(q); d.send(DatagramPacket(out, out.size, pk.address, pk.port)) } catch (e: Exception) {} }
+          pool.execute { try { val out = byteArrayOf(0, 0, 0, 1, 1, 1, 1, 1, 0, 53) + dns(q); d.send(DatagramPacket(out, out.size, pk.address, pk.port)) } catch (e: Exception) {} }
         } catch (e: Exception) { break }
       }
     }
@@ -174,11 +211,14 @@ class VpnSvc : VpnService() {
   }
 
   private fun dns(q: ByteArray): ByteArray {
-    val ch = (pick() ?: throw Exception()).openChannel("direct-tcpip") as ChannelDirectTCPIP
-    ch.setHost("1.1.1.1"); ch.setPort(53)
-    val inp = DataInputStream(ch.inputStream); val out = ch.outputStream
-    ch.connect(10000)
-    out.write(byteArrayOf((q.size shr 8).toByte(), q.size.toByte()) + q); out.flush()
-    val r = ByteArray(inp.readUnsignedShort()); inp.readFully(r); ch.disconnect(); return r
+    val s = acquire() ?: throw Exception()
+    try {
+      val ch = s.openChannel("direct-tcpip") as ChannelDirectTCPIP
+      ch.setHost("1.1.1.1"); ch.setPort(53)
+      val inp = DataInputStream(ch.inputStream); val out = ch.outputStream
+      ch.connect(10000)
+      out.write(byteArrayOf((q.size shr 8).toByte(), q.size.toByte()) + q); out.flush()
+      val r = ByteArray(inp.readUnsignedShort()); inp.readFully(r); ch.disconnect(); return r
+    } finally { release(s) }
   }
 }
