@@ -367,6 +367,16 @@ Tips
 
   override fun onCreate(b: Bundle?) {
     super.onCreate(b)
+    // crash ho to stack file mein likho, agli baar Logs mein dikhao
+    try {
+      val cf = java.io.File(filesDir, "crash.txt")
+      if (cf.exists()) { LogBus.add("PICHLA CRASH: " + cf.readText().take(1200)); cf.delete() }
+      val old = Thread.getDefaultUncaughtExceptionHandler()
+      Thread.setDefaultUncaughtExceptionHandler { t, e ->
+        try { cf.writeText(android.util.Log.getStackTraceString(e)) } catch (x: Throwable) {}
+        old?.uncaughtException(t, e)
+      }
+    } catch (e: Throwable) {}
     P = getSharedPreferences("a", 0)
     dark = P.getBoolean("dark", true)
     window.statusBarColor = bg; window.navigationBarColor = bg
