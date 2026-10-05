@@ -71,6 +71,52 @@ jobs:
           test -s "$SO" || { echo "libhev-socks5-tunnel.so bana hi nahi"; exit 1; }
           cp "$SO" $PD/app/src/main/jniLibs/arm64-v8a/
 
+      - name: hev JNI jaanch + Java class sync
+        run: |
+          H=$RUNNER_TEMP/hevproj
+          SO=$(find $H/libs -name 'libhev-socks5-tunnel.so' | head -1)
+          echo "--- .so ke andar JNI naam ---"
+          strings -a "$SO" | grep -E "hev/htproxy|TProxy|\(Ljava/lang/String;I\)V|\(\)\[J" | head -20 || true
+          echo "--- JNI_OnLoad wali C file ---"
+          grep -rn "JNI_OnLoad\|native_methods\|PKGNAME\|CLSNAME" $H/jni/hev-socks5-tunnel/src/*.c | head -30 || true
+          # hev ki asli native-method table se Java class bana do, taaki naam/signature hamesha match ho
+          HEVDIR=$H/jni/hev-socks5-tunnel OUTJ=$PD/app/src/main/java/hev/htproxy/TProxyService.java python3 - <<'PY'
+          import re, sys, glob, os
+          d = os.environ['HEVDIR']; outj = os.environ['OUTJ']
+          srcs = [p for p in glob.glob(d + '/src/**/*.c', recursive=True) if 'JNI_OnLoad' in open(p, errors='ignore').read()]
+          print('jni src:', srcs)
+          if not srcs:
+              print('JNI source nahi mila - repo wali Java class hi rahegi'); sys.exit(0)
+          t = open(srcs[0], errors='ignore').read()
+          ms = re.findall(r'\{\s*"(\w+)"\s*,\s*"(\([^"]*\)[^"]*)"\s*,', t)
+          print('native table:', ms)
+          names = [m[0] for m in ms]
+          if 'TProxyStartService' not in names or 'TProxyStopService' not in names:
+              print('table samajh nahi aayi - repo wali Java class hi rahegi'); sys.exit(0)
+          prim = {'Z': 'boolean', 'B': 'byte', 'C': 'char', 'S': 'short', 'I': 'int', 'J': 'long', 'F': 'float', 'D': 'double', 'V': 'void'}
+          def parse(sig, i):
+              dims = 0
+              while sig[i] == '[':
+                  dims += 1; i += 1
+              if sig[i] == 'L':
+                  j = sig.index(';', i); cls = sig[i + 1:j].replace('/', '.'); i = j + 1
+                  base = 'String' if cls == 'java.lang.String' else ('Object' if cls == 'java.lang.Object' else cls)
+              else:
+                  base = prim[sig[i]]; i += 1
+              return base + '[]' * dims, i
+          lines = []
+          for n, sig in ms:
+              j = 1; ps = []
+              while sig[j] != ')':
+                  ty, j = parse(sig, j); ps.append(ty)
+              ret, _ = parse(sig, j + 1)
+              args = ', '.join('%s p%d' % (ty, k) for k, ty in enumerate(ps))
+              lines.append('  public static native %s %s(%s);' % (ret, n, args))
+          code = 'package hev.htproxy;\npublic class TProxyService {\n  static { System.loadLibrary("hev-socks5-tunnel"); }\n' + '\n'.join(lines) + '\n}\n'
+          open(outj, 'w').write(code)
+          print(code)
+          PY
+
       - name: jniLibs check (gradle se pehle)
         run: |
           ls -la $PD/app/src/main/jniLibs/arm64-v8a/
