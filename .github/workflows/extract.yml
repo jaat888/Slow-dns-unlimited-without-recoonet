@@ -5,6 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: extract
+  cancel-in-progress: false
 jobs:
   extract:
     runs-on: ubuntu-latest
@@ -15,19 +18,41 @@ jobs:
           shopt -s nullglob
           zips=(*.zip)
           if [ ${#zips[@]} -eq 0 ]; then echo "Koi zip nahi mila"; exit 0; fi
+
+          # Sabse naya zip chuno (version sort: v10 > v9). Baaki purane zip hata do.
+          newest=$(printf '%s\n' "${zips[@]}" | sort -V | tail -1)
+          echo "Use ho raha hai: $newest"
           for z in "${zips[@]}"; do
-            rm -rf /tmp/x && mkdir /tmp/x && unzip -q "$z" -d /tmp/x
-            src=/tmp/x
-            # agar zip ke andar ek hi folder hai (jaise SlowDNS/) to uske andar ka content lo
-            if [ "$(ls -A /tmp/x | wc -l)" -eq 1 ] && [ -d "/tmp/x/$(ls -A /tmp/x)" ]; then src="/tmp/x/$(ls -A /tmp/x)"; fi
-            rm -rf .github/_skip; rm -rf "$src/.github"   # workflow files zip se nahi chalte, haath se dalo
-            rm -rf app build.gradle.kts settings.gradle.kts gradle.properties
-            cp -a "$src"/. .
-            git rm -q --cached "$z" 2>/dev/null || true
-            rm -f "$z"
+            if [ "$z" != "$newest" ]; then git rm -q --cached "$z" 2>/dev/null || true; rm -f "$z"; fi
           done
+
+          rm -rf /tmp/x && mkdir /tmp/x && unzip -q -o "$newest" -d /tmp/x
+          rm -rf /tmp/x/__MACOSX
+          find /tmp/x -name '.DS_Store' -delete
+          src=/tmp/x
+          # agar zip ke andar ek hi folder hai (jaise SlowDNS/) to uske andar ka content lo
+          if [ "$(ls -A /tmp/x | wc -l)" -eq 1 ] && [ -d "/tmp/x/$(ls -A /tmp/x)" ]; then src="/tmp/x/$(ls -A /tmp/x)"; fi
+
+          # sanity: project sahi hai ya nahi
+          test -f "$src/settings.gradle.kts" || { echo "zip mein settings.gradle.kts nahi hai"; ls -la "$src"; exit 1; }
+          test -d "$src/app/src/main" || { echo "zip mein app/src/main nahi hai"; ls -la "$src"; exit 1; }
+
+          rm -rf "$src/.github"   # workflow files zip se nahi chalte, haath se dalo
+
+          # purana project poora saaf (purani/bachi hui files na rahein)
+          rm -rf app gradle build.gradle.kts settings.gradle.kts gradle.properties local.properties
+          cp -a "$src"/. .
+
+          git rm -q --cached "$newest" 2>/dev/null || true
+          rm -f "$newest"
+
+          echo "--- ab repo mein ---"
+          ls -la
+          find app/src/main -maxdepth 4 -type f | head -50
+
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add -A
-          git commit -m "Zip extract ho gaya" || echo "Kuch badla nahi"
+          git commit -m "Zip extract ho gaya: $newest" || echo "Kuch badla nahi"
+          git pull --rebase origin "$GITHUB_REF_NAME" || true
           git push
