@@ -57,6 +57,7 @@ class MainActivity : Activity() {
   private lateinit var dnBig: TextView; private lateinit var dnSm: TextView
   private lateinit var coBig: TextView; private lateinit var coSm: TextView
   private lateinit var tmBig: TextView; private lateinit var tmSm: TextView
+  private var lastUs = 0.0; private var lastDs = 0.0
   private var lastT = 0L; private var lastU = 0L; private var lastD = 0L
 
   private fun dp(x: Int) = (x * resources.displayMetrics.density).toInt()
@@ -165,7 +166,8 @@ class MainActivity : Activity() {
     statusTv = tv("", 15f, acc, true).apply { layoutParams = lp(16) }
     startB = btn("START") { start() }
     stopB = btn("STOP", red) { startService(Intent(this, VpnSvc::class.java).setAction("stop")) }
-    fun big() = tv("0", 22f, fg, true); fun sm() = tv("", 12f, sub)
+    fun big() = tv("0", 22f, fg, true)
+    fun sm() = tv("", 12f, sub)
     upBig = big(); upSm = sm(); dnBig = big(); dnSm = sm(); coBig = big(); coSm = sm(); tmBig = big(); tmSm = sm()
     val head = row(logo(44), tv("Mollad DNS", 22f, fg, true).apply { setPadding(dp(12), 0, 0, 0) }).apply { gravity = android.view.Gravity.CENTER_VERTICAL }
     col.addView(head)
@@ -312,12 +314,13 @@ Tips
     val now = System.currentTimeMillis(); val u = Stats.up.get(); val d = Stats.down.get()
     if (now - lastT >= 800) {
       val dt = (now - lastT) / 1000.0
-      val us = if (r && lastT > 0 && u >= lastU) (u - lastU) * 8 / 1e6 / dt else 0.0
-      val ds = if (r && lastT > 0 && d >= lastD) (d - lastD) * 8 / 1e6 / dt else 0.0
-      upBig.text = "%.2f Mbps".format(us); dnBig.text = "%.2f Mbps".format(ds)
+      lastUs = if (r && lastT > 0 && u >= lastU) (u - lastU) / dt else 0.0
+      lastDs = if (r && lastT > 0 && d >= lastD) (d - lastD) / dt else 0.0
       lastT = now; lastU = u; lastD = d
     }
-    upSm.text = fmtSize(u); dnSm.text = fmtSize(d)
+    upBig.text = "%.0f KB/s".format(lastUs / 1000); dnBig.text = "%.0f KB/s".format(lastDs / 1000)
+    upSm.text = "%.2f MB/s | %.2f Mbps\nTotal: %s".format(lastUs / 1e6, lastUs * 8 / 1e6, fmtSize(u))
+    dnSm.text = "%.2f MB/s | %.2f Mbps\nTotal: %s".format(lastDs / 1e6, lastDs * 8 / 1e6, fmtSize(d))
     coBig.text = if (r) "${VpnSvc.connected()} / ${VpnSvc.total}" else "0 / 0"; coSm.text = "tunnels"
     if (r) { val sec = (now - Stats.since) / 1000; tmBig.text = "%d:%02d:%02d".format(sec / 3600, sec / 60 % 60, sec % 60); tmSm.text = "chal raha" }
     else { tmBig.text = "--"; tmSm.text = "band" }

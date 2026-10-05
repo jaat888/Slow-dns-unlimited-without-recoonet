@@ -113,7 +113,7 @@ class VpnSvc : VpnService() {
         val to = getSharedPreferences("a", 0).getInt("to", 20).coerceIn(5, 300) * 1000
         LogBus.add("[$label] dnstt start via $rs")
         p = ProcessBuilder(bin, "-udp", rs, "-pubkey", pub, ns, "127.0.0.1:$port")
-          .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.DISCARD).start()
+          .redirectErrorStream(true).redirectOutput(File("/dev/null")).start()
         procs.add(p)
         Thread.sleep(3000)
         s = JSch().getSession(user, "127.0.0.1", port)
