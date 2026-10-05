@@ -22,9 +22,10 @@ jobs:
           if [ -f settings.gradle.kts ]; then D=.
           elif [ -f SlowDNS/settings.gradle.kts ]; then D=SlowDNS
           else echo "settings.gradle.kts nahi mili"; ls -la; exit 1; fi
-          echo "PD=$GITHUB_WORKSPACE/$D" >> $GITHUB_ENV
-          mkdir -p "$GITHUB_WORKSPACE/$D/app/src/main/jniLibs/arm64-v8a"
-          echo "project = $D"
+          if [ "$D" = "." ]; then P="$GITHUB_WORKSPACE"; else P="$GITHUB_WORKSPACE/$D"; fi
+          echo "PD=$P" >> $GITHUB_ENV
+          mkdir -p "$P/app/src/main/jniLibs/arm64-v8a"
+          echo "project = $P"
 
       - name: dnstt-client
         run: |
