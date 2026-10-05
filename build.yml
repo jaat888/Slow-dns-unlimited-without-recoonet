@@ -1,0 +1,51 @@
+name: build
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [extract]
+    types: [completed]
+jobs:
+  apk:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: 8.7 }
+      - name: dnstt-client
+        run: |
+          git clone https://www.bamsoftware.com/git/dnstt.git
+          OUT=$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a
+          mkdir -p $OUT
+          cd dnstt/dnstt-client
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o $OUT/libdnstt.so .
+          # Low-load binary: polling dheema (patch match na hua to normal binary hi copy hota hai)
+          grep -n "PollDelay\|pollLimit" *.go | head -20 || true
+          sed -i -E 's/initPollDelay([[:space:]]*)=([[:space:]]*)500 \* time\.Millisecond/initPollDelay\1=\2 1 * time.Second/; s/maxPollDelay([[:space:]]*)=([[:space:]]*)10 \* time\.Second/maxPollDelay\1=\2 30 * time.Second/; s/pollLimit([[:space:]]*)=([[:space:]]*)16/pollLimit\1=\2 4/' *.go
+          if git diff --quiet; then
+            echo "WARNING: polling patch match nahi hua, low-load = normal"
+            cp $OUT/libdnstt.so $OUT/libdnstt_low.so
+          else
+            git diff --stat
+            CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o $OUT/libdnstt_low.so .
+          fi
+      - name: hev-socks5-tunnel
+        run: |
+          git clone --recursive https://github.com/heiher/hev-socks5-tunnel
+          cd hev-socks5-tunnel
+          $ANDROID_NDK_HOME/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=Android.mk APP_ABI=arm64-v8a APP_PLATFORM=android-26 NDK_LIBS_OUT=$RUNNER_TEMP/hevlibs "APP_CFLAGS=-O3 -DPKGNAME=hev/htproxy -DCLSNAME=TProxyService"
+      - name: hev lib ko jniLibs mein copy karo (ndk-build dnstt ko mita na sake)
+        run: |
+          cp $RUNNER_TEMP/hevlibs/arm64-v8a/*.so $GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/
+          ls -la $GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/
+          test -s $GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libdnstt.so || { echo "libdnstt.so GAYAB hai"; exit 1; }
+          test -s $GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so || { echo "hev lib GAYAB hai"; exit 1; }
+      - run: gradle assembleDebug
+      - name: APK ke andar libs check
+        run: unzip -l app/build/outputs/apk/debug/*.apk | grep "lib/" || { echo "APK mein koi lib nahi"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with: { name: MolladDNS-apk, path: app/build/outputs/apk/debug/*.apk }
