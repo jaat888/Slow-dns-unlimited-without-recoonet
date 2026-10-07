@@ -37,10 +37,36 @@ jobs:
           done
           test -d $RUNNER_TEMP/dnstt/dnstt-client || { echo "dnstt clone nahi hua"; exit 1; }
           cd $RUNNER_TEMP/dnstt/dnstt-client
+          # Custom DNS payload size: app env DNSTT_UDP_PAYLOAD se deta hai (EDNS0 requester payload; env na ho to purana 4096)
+          cat > payload_env.go <<'GO'
+          package main
+
+          import (
+          	"os"
+          	"strconv"
+          )
+
+          func payloadSize() uint16 {
+          	v, err := strconv.Atoi(os.Getenv("DNSTT_UDP_PAYLOAD"))
+          	if err != nil || v < 512 || v > 4096 {
+          		return 4096
+          	}
+          	return uint16(v)
+          }
+          GO
+          sed -i -E 's/Class:([[:space:]]*)4096/Class:\1payloadSize()/' $(ls *.go | grep -v payload_env.go)
+          if grep -q 'payloadSize()' $(ls *.go | grep -v payload_env.go); then
+            echo "payload patch lag gaya"; grep -n 'payloadSize()' *.go | head
+          else
+            echo "WARNING: payload patch match nahi hua - DNS packet size setting asar nahi karegi"
+            rm -f payload_env.go
+          fi
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o $OUT/libdnstt.so .
           # Low-load binary: polling dheema (patch match na hua to normal binary hi copy hota hai)
+          H0=$(git diff | md5sum)
           sed -i -E 's/initPollDelay([[:space:]]*)=([[:space:]]*)500 \* time\.Millisecond/initPollDelay\1=\2 1 * time.Second/; s/maxPollDelay([[:space:]]*)=([[:space:]]*)10 \* time\.Second/maxPollDelay\1=\2 30 * time.Second/; s/pollLimit([[:space:]]*)=([[:space:]]*)16/pollLimit\1=\2 4/' *.go
-          if git diff --quiet; then
+          H1=$(git diff | md5sum)
+          if [ "$H0" = "$H1" ]; then
             echo "WARNING: polling patch match nahi hua, low-load = normal"
             cp $OUT/libdnstt.so $OUT/libdnstt_low.so
           else
