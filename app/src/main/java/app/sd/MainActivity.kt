@@ -230,6 +230,12 @@ class MainActivity : Activity() {
     }
     numSet("Connection timeout (seconds)", "Ek tunnel itne second tak connect hone ka wait karega, phir fail maan ke dobara try karega. Jo account der se connect hota hai uske liye zyada rakho.", "to", 20, 5, 300)
     numSet("Retry max wait (seconds)", "Fail hone par tunnel 3 sec baad retry karta hai, phir 6, 12, 24... is limit tak. Retry kabhi band nahi hota, sirf wait badhta hai taaki server aur battery par load na pade. 3 rakho to hamesha 3 sec mein retry.", "rmax", 30, 3, 120)
+    numSet("Max queries per second (QPS limit)", "Saare tunnels ki DNS queries ek saath is limit se zyada nahi jayengi. 0 = OFF. Logs mein har 5 sec mein dikhta hai kitni query gayi aur kitne jawab aaye. Jawab % gir jaye to resolver block kar raha hai. Sirf gin-ti dekhni ho to 1000 rakho. Agle START se lagu.", "qps", 0, 0, 5000)
+    val rotS = Switch(this).apply { isChecked = P.getBoolean("rot", false); text = "Account rotation"; setTextColor(fg); layoutParams = lp(24)
+      setOnCheckedChangeListener { _, c -> P.edit().putBoolean("rot", c).apply(); toast(if (c) "Rotation ON (agle START se)" else "Rotation OFF - saare account ek saath chalenge") } }
+    col.addView(rotS)
+    col.addView(tv("ON: ek waqt mein ek account chalta hai. Har interval baad agla ON account (apne server/user/password ke saath) judta hai, jaise hi judta hai purana account band ho jata hai. VPN beech mein band nahi hota. Accounts upar wale order mein ghoomte hain. OFF: saare ON account ek saath chalte hain. Agle START se lagu.", 12f, sub))
+    numSet("Rotation interval (seconds)", "Naya account judne ke kitne second baad agla account badle. Default 5. Judne mein khud 3-5 second lagte hain, isliye asli gap interval + judne ka time hota hai. Turant lagu.", "rint", 5, 1, 3600)
     val auto = Switch(this).apply { isChecked = P.getBoolean("auto", true); text = "Auto reconnect (active check)"; setTextColor(fg); layoutParams = lp(24)
       setOnCheckedChangeListener { _, c -> P.edit().putBoolean("auto", c).apply(); toast(if (c) "Auto reconnect ON" else "Auto reconnect OFF (sirf purana tareeqa)") } }
     col.addView(auto)
@@ -312,6 +318,8 @@ Settings
 - Connection timeout: ek tunnel kitni der connect hone ka wait kare.
 - Retry max wait: fail hone par retry ka wait 3s se badhta hai is limit tak. Retry kabhi band nahi hota.
 - Low-load mode: dnstt ka polling dheema, load kam, speed thodi kam ho sakti hai.
+- QPS limit: saare tunnels ki total DNS queries/sec par limit. Logs mein query/s aur jawab % dikhta hai, jisse pata chalta hai resolver kab block karta hai.
+- Account rotation: ON karo to har interval (default 5 sec) baad agla account judta hai aur purana band hota hai. Interval Settings mein badal sakte ho.
 - Auto reconnect: har "Check interval" second pe tunnel check hota hai. Kharab mile to naya tunnel pehle judta hai, phir purana band hota hai. VPN beech mein band nahi hota.
 - DNS packet size: resolver se ek jawab mein kitna data maange (default 1232). Resolver drop kare to 512/900 karo.
 - VPN MTU, SOCKS port, Tunnel start port: custom set kar sakte ho. Port busy ho to app khud khali port le leta hai.
