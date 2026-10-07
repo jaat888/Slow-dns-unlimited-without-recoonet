@@ -230,6 +230,16 @@ class MainActivity : Activity() {
     }
     numSet("Connection timeout (seconds)", "Ek tunnel itne second tak connect hone ka wait karega, phir fail maan ke dobara try karega. Jo account der se connect hota hai uske liye zyada rakho.", "to", 20, 5, 300)
     numSet("Retry max wait (seconds)", "Fail hone par tunnel 3 sec baad retry karta hai, phir 6, 12, 24... is limit tak. Retry kabhi band nahi hota, sirf wait badhta hai taaki server aur battery par load na pade. 3 rakho to hamesha 3 sec mein retry.", "rmax", 30, 3, 120)
+    val auto = Switch(this).apply { isChecked = P.getBoolean("auto", true); text = "Auto reconnect (active check)"; setTextColor(fg); layoutParams = lp(24)
+      setOnCheckedChangeListener { _, c -> P.edit().putBoolean("auto", c).apply(); toast(if (c) "Auto reconnect ON" else "Auto reconnect OFF (sirf purana tareeqa)") } }
+    col.addView(auto)
+    col.addView(tv("ON: har tunnel ka asli health check hota hai. Kharab mile to pehle naya tunnel judta hai, phir purana band hota hai. VPN poora disconnect nahi hota, baaki tunnel chalte rehte hain. OFF: sirf tab reconnect jab tunnel khud toot jaye.", 12f, sub))
+    numSet("Check interval (seconds)", "Har kitne second mein tunnel check ho. Chhota = jaldi pakadta hai, thoda zyada battery/data. Turant lagu.", "chk", 5, 1, 60)
+    numSet("Fail count before reconnect", "Lagatar kitni baar check fail ho tab reconnect ho. Chhota = jaldi reconnect, par kabhi galat alarm bhi ho sakta hai. Turant lagu.", "miss", 2, 1, 10)
+    numSet("DNS packet size / payload (bytes)", "Resolver (jaise 8.8.8.8) se ek jawab mein kitna data maange. Bada = ek request mein zyada data, par kuch resolver bada packet drop kar dete hain. Dikkat ho to 512 ya 900 karo. Server 1232 se zyada nahi bhejta. Agle START se lagu.", "pay", 1232, 512, 4096)
+    numSet("VPN MTU", "Phone ke VPN packet ka max size. Kam karo agar kuch sites ya apps atakte hain. Agle START se lagu.", "mtu", 1500, 576, 1500)
+    numSet("SOCKS port", "App ka local proxy port. Busy hoga (jaise Termux mein) to app khud koi khali port le lega. Agle START se lagu.", "sport", 3000, 1024, 65535)
+    numSet("Tunnel start port", "Tunnels is port se shuru hote hain (A1#1 = start+1...). Koi port busy ho to khud khali port milta hai. Agle START se lagu.", "tport", 2000, 1024, 65000)
     val low = Switch(this).apply { isChecked = P.getBoolean("low", false); text = "Low-load mode"; setTextColor(fg); layoutParams = lp(24)
       setOnCheckedChangeListener { _, c -> P.edit().putBoolean("low", c).apply(); toast(if (c) "Low-load ON (agle START se)" else "Low-load OFF (agle START se)") } }
     col.addView(low)
@@ -302,6 +312,9 @@ Settings
 - Connection timeout: ek tunnel kitni der connect hone ka wait kare.
 - Retry max wait: fail hone par retry ka wait 3s se badhta hai is limit tak. Retry kabhi band nahi hota.
 - Low-load mode: dnstt ka polling dheema, load kam, speed thodi kam ho sakti hai.
+- Auto reconnect: har "Check interval" second pe tunnel check hota hai. Kharab mile to naya tunnel pehle judta hai, phir purana band hota hai. VPN beech mein band nahi hota.
+- DNS packet size: resolver se ek jawab mein kitna data maange (default 1232). Resolver drop kare to 512/900 karo.
+- VPN MTU, SOCKS port, Tunnel start port: custom set kar sakte ho. Port busy ho to app khud khali port le leta hai.
 - Theme: Black (Dark) ya Light.
 - Background permission: battery optimization band karne ki aur notification ki permission. Isse app background mein chalta rahega.
 
