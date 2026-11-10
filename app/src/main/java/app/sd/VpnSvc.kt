@@ -50,6 +50,17 @@ class VpnSvc : VpnService() {
   private var tun: ParcelFileDescriptor? = null
   private var ss: ServerSocket? = null
   private var wl: PowerManager.WakeLock? = null
+  private val resolverIdx = AtomicInteger(0)
+
+  // Resolver rotation: "resolvers" setting (comma-separated, jaise "8.8.8.8,1.1.1.1,9.9.9.9")
+  // mein se baari-baari ek uthata hai. Setting khali ho to account ka apna dns-target hi use hota hai (purana behavior).
+  private fun pickResolver(accountDns: String): String {
+    val pr = getSharedPreferences("a", 0)
+    val list = (pr.getString("resolvers", "") ?: "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    if (list.isEmpty()) return resolver(accountDns)
+    val i = Math.floorMod(resolverIdx.getAndIncrement(), list.size)
+    return resolver(list[i])
+  }
 
   private fun notif(t: String): Notification =
     Notification.Builder(this, "v").setContentTitle("Mollad DNS").setContentText(t)
@@ -196,6 +207,7 @@ class VpnSvc : VpnService() {
     val pr = getSharedPreferences("a", 0)
     val to = pr.getInt("to", 20).coerceIn(5, 300) * 1000
     val pay = pr.getInt("pay", 1232).coerceIn(512, 4096)
+    val dmtu = pr.getInt("dmtu", 0).coerceIn(0, 1500)  // 0 = flag hi nahi dete, dnstt apna default use karega
     var bin = File(applicationInfo.nativeLibraryDir, if (pr.getBoolean("low", false)) "libdnstt_low.so" else "libdnstt.so")
     if (!bin.exists()) bin = File(applicationInfo.nativeLibraryDir, "libdnstt.so")
     val port = pickPort(pref)
@@ -203,9 +215,12 @@ class VpnSvc : VpnService() {
     val target = if (qps > 0) "127.0.0.1:" + relayFor(rs, g) else rs
     val t0 = System.currentTimeMillis()
     LogBus.add("[$label] dnstt start | domain=$ns | dns-target=$target | local-port=$port | payload=$pay" +
+      (if (dmtu > 0) " | dnstt-mtu=$dmtu" else "") +
       " | low-load=${pr.getBoolean("low", false)}" + (if (qps > 0) " | relay-qps-limit=$qps" else "") + " | timeout=${to / 1000}s")
-    val pb = ProcessBuilder(bin.path, "-udp", target, "-pubkey", pub, ns, "127.0.0.1:$port")
-      .redirectErrorStream(true).redirectOutput(File("/dev/null"))
+    val args = mutableListOf(bin.path, "-udp", target, "-pubkey", pub)
+    if (dmtu > 0) { args.add("-mtu"); args.add(dmtu.toString()) }
+    args.add(ns); args.add("127.0.0.1:$port")
+    val pb = ProcessBuilder(args).redirectErrorStream(true).redirectOutput(File("/dev/null"))
     pb.environment()["DNSTT_UDP_PAYLOAD"] = pay.toString()
     val p = pb.start()
     procs.add(p)
@@ -319,13 +334,13 @@ class VpnSvc : VpnService() {
   // Ek account ke saare tunnel (n) ek saath judna shuru
   private fun launch(a: Acct, g: Int): Group {
     val grp = Group(a)
-    val rs = resolver(a.d)
     val tbase = getSharedPreferences("a", 0).getInt("tport", 2000).coerceIn(1024, 63000)
     grp.pending.set(a.n)
     for (j in 1..a.n) {
       val pref = tbase + (serial.incrementAndGet() % 2000)
       thread {
         val label = "A${a.no}#$j"
+        val rs = pickResolver(a.d)
         try {
           if (alive(g) && !grp.closed) {
             val l = openLink(a.ns, a.pk, a.u, a.p, rs, pref, label, g)
@@ -387,19 +402,20 @@ class VpnSvc : VpnService() {
   // Har tunnel: connect -> har "chk" second pe health check -> kharab mile to PEHLE naya tunnel,
   // phir purana band (make-before-break). VPN (tun) kabhi band nahi hota, baaki tunnel chalte rehte hain.
   private fun tunnel(ns: String, pub: String, user: String, pass: String, dns: String, pref: Int, label: String, g: Int) {
-    val rs = resolver(dns)
     var wait = 3000L
     var miss = 0
     var cur: Link? = null
+    var linkSince = 0L
     while (alive(g)) {
       val pr = getSharedPreferences("a", 0)
       val maxMs = pr.getInt("rmax", 30).coerceIn(3, 120) * 1000L
       val l = cur
       if (l == null) {
+        val rs = pickResolver(dns)
         try {
           val n = openLink(ns, pub, user, pass, rs, pref, label, g)
-          reg(n); cur = n; wait = 3000L; miss = 0
-          LogBus.add("[$label] connected")
+          reg(n); cur = n; wait = 3000L; miss = 0; linkSince = System.currentTimeMillis()
+          LogBus.add("[$label] connected | resolver=$rs")
         } catch (e: Exception) {
           if (alive(g)) LogBus.add("[$label] fail: ${e.message} - ${wait / 1000}s baad retry")
           nap(wait, g); wait = (wait * 2).coerceAtMost(maxMs)
@@ -409,18 +425,24 @@ class VpnSvc : VpnService() {
       val auto = pr.getBoolean("auto", true)
       val chk = pr.getInt("chk", 5).coerceIn(1, 60) * 1000L
       val need = pr.getInt("miss", 2).coerceIn(1, 10)
+      val sbreak = pr.getInt("sbreak", 0).coerceIn(0, 7200) * 1000L
       nap(if (auto) chk else 2000L, g)
       if (!alive(g)) break
       val dead = !l.p.isAlive || !l.s.isConnected
-      if (!dead && (!auto || probe(l.s, chk.toInt().coerceAtLeast(3000)))) { miss = 0; suspect.remove(l.s); continue }
-      miss++
-      if (!dead && miss < need) { suspect.add(l.s); continue }
-      LogBus.add("[$label] tuta/atka - pehle naya tunnel, phir purana band")
+      val timeUp = sbreak > 0 && System.currentTimeMillis() - linkSince >= sbreak
+      if (!dead && !timeUp && (!auto || probe(l.s, chk.toInt().coerceAtLeast(3000)))) { miss = 0; suspect.remove(l.s); continue }
+      if (!dead && !timeUp) {
+        miss++
+        if (miss < need) { suspect.add(l.s); continue }
+      }
+      val reason = if (timeUp) "session-break (${sbreak / 1000}s) - naya resolver/tunnel le rahe, counter reset ke liye" else "tuta/atka"
+      LogBus.add("[$label] $reason - pehle naya tunnel, phir purana band")
       suspect.add(l.s); miss = 0
+      val rs = pickResolver(dns)
       try {
         val n = openLink(ns, pub, user, pass, rs, pref, label, g)
-        reg(n); cur = n; closeLink(l); wait = 3000L
-        LogBus.add("[$label] naya tunnel connected, purana hata diya")
+        reg(n); cur = n; closeLink(l); wait = 3000L; linkSince = System.currentTimeMillis()
+        LogBus.add("[$label] naya tunnel connected (resolver=$rs), purana hata diya")
       } catch (e: Exception) {
         if (alive(g)) LogBus.add("[$label] reconnect fail: ${e.message} - ${wait / 1000}s baad retry")
         closeLink(l); cur = null
