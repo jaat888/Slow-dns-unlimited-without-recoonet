@@ -52,8 +52,8 @@ class VpnSvc : VpnService() {
   private var wl: PowerManager.WakeLock? = null
   private val resolverIdx = AtomicInteger(0)
 
-  // Resolver rotation: "resolvers" setting (comma-separated, jaise "8.8.8.8,1.1.1.1,9.9.9.9")
-  // mein se baari-baari ek uthata hai. Setting khali ho to account ka apna dns-target hi use hota hai (purana behavior).
+  // Resolver rotation: picks one entry in turn from the "resolvers" setting (comma-separated, e.g. "8.8.8.8,1.1.1.1,9.9.9.9").
+  // If the setting is empty, the account's own dns-target is used (old behavior).
   private fun pickResolver(accountDns: String): String {
     val pr = getSharedPreferences("a", 0)
     val list = (pr.getString("resolvers", "") ?: "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
@@ -70,14 +70,14 @@ class VpnSvc : VpnService() {
     LogBus.setup(filesDir)
     getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("v", "VPN", NotificationManager.IMPORTANCE_LOW))
     try { startForeground(1, notif(if (i?.action == "stop") "Stopping..." else "Connecting...")) } catch (e: Throwable) { LogBus.add("notification/foreground error: ${e.message}") }
-    // system ne service restart ki (null intent) -> khud start na ho, warna crash par loop banta hai
+    // The system restarted the service (null intent) -> do not start by ourselves, otherwise a crash turns into a loop
     if (i == null) { try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) {}; stopSelf(); return START_NOT_STICKY }
     if (i?.action == "stop") { stop(); try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) {}; stopSelf(); return START_NOT_STICKY }
     if (on.compareAndSet(false, true)) {
       stopped.set(false)
       running = true; inst = this
       LogBus.add("VPN service start")
-      LogBus.add("android " + android.os.Build.VERSION.SDK_INT + " | abi: " + android.os.Build.SUPPORTED_ABIS.joinToString() + " | libs: " + (File(applicationInfo.nativeLibraryDir).list()?.joinToString() ?: "KHALI"))
+      LogBus.add("android " + android.os.Build.VERSION.SDK_INT + " | abi: " + android.os.Build.SUPPORTED_ABIS.joinToString() + " | libs: " + (File(applicationInfo.nativeLibraryDir).list()?.joinToString() ?: "EMPTY"))
       wl = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sd:w").also { it.acquire() }
       val g = gen.incrementAndGet(); pool = Executors.newCachedThreadPool()
       thread { try { begin(g) } catch (e: Throwable) { LogBus.add("start error: ${e.message}"); stop(); try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (x: Exception) {}; stopSelf() } }
@@ -98,7 +98,7 @@ class VpnSvc : VpnService() {
       while (alive(g)) {
         nap(5000, g)
         val s = qSent.get(); val gt = qGot.get(); val ds = s - ls; val dg = gt - lg; ls = s; lg = gt
-        if (ds > 0) LogBus.add("DNS: ${ds / 5} query/s gayi, ${dg / 5} jawab/s aaye (${dg * 100 / ds}%)")
+        if (ds > 0) LogBus.add("DNS: ${ds / 5} queries/s sent, ${dg / 5} replies/s received (${dg * 100 / ds}%)")
       }
     }
     val arr = try { JSONArray(getSharedPreferences("a", 0).getString("acc2", "[]")) } catch (e: Exception) { JSONArray() }
@@ -111,29 +111,29 @@ class VpnSvc : VpnService() {
       val o = arr.getJSONObject(a)
       if (!o.optBoolean("on", true)) continue
       val ns = o.optString("ns"); val pk = o.optString("pk"); val u = o.optString("u"); val p = o.optString("p"); val d = o.optString("d")
-      if (ns.isEmpty() || pk.isEmpty() || u.isEmpty() || p.isEmpty() || d.isEmpty()) { LogBus.add("Account ${a + 1} adhura - skip"); continue }
+      if (ns.isEmpty() || pk.isEmpty() || u.isEmpty() || p.isEmpty() || d.isEmpty()) { LogBus.add("Account ${a + 1} is incomplete - skipped"); continue }
       val n = o.optInt("n", 1).coerceIn(1, 20)
       t += n
       accl.add(Acct(a + 1, ns, pk, u, p, d, n))
       if (!rot) for (j in 1..n) { k++; val port = tbase + k; val label = "A${a + 1}#$j"; jobs.add { tunnel(ns, pk, u, p, d, port, label, g) } }
     }
     total = if (rot) (accl.firstOrNull()?.n ?: 0) else t
-    if (t == 0) { LogBus.add("Koi ON account nahi"); stop(); stopSelf(); return }
+    if (t == 0) { LogBus.add("No account is turned ON"); stop(); stopSelf(); return }
     ss = bindSocks(getSharedPreferences("a", 0).getInt("sport", 3000))
     socksPort = ss!!.localPort
     LogBus.add("SOCKS port: $socksPort")
     thread { while (alive(g)) { try { val c = ss!!.accept(); pool.execute { try { handle(c) } catch (e: Exception) { c.close() } } } catch (e: Exception) { break } } }
-    // tunnel ek ke baad ek start hote hain (CPU/resolver par ek saath load nahi)
-    if (rot) { LogBus.add("Account rotation ON: ${accl.size} account, har ${getSharedPreferences("a", 0).getInt("rint", 5)} sec mein agla"); thread { try { rotate(accl, g) } catch (e: Throwable) { LogBus.add("rotate error: ${e.message}") } } }
+    // tunnels start one after another (no burst of load on CPU/resolver)
+    if (rot) { LogBus.add("Account rotation ON: ${accl.size} accounts, switching every ${getSharedPreferences("a", 0).getInt("rint", 5)} sec"); thread { try { rotate(accl, g) } catch (e: Throwable) { LogBus.add("rotate error: ${e.message}") } } }
     jobs.forEachIndexed { idx, j -> thread { nap(idx * 400L, g); if (alive(g)) try { j() } catch (e: Throwable) { LogBus.add("tunnel error: ${e.message}") } } }
     thread {
       val nm = getSystemService(NotificationManager::class.java)
-      while (alive(g)) { try { nm.notify(1, notif("${connected()} / $total tunnel connected")) } catch (e: Throwable) {}; nap(5000, g) }
+      while (alive(g)) { try { nm.notify(1, notif("${connected()} / $total tunnels connected")) } catch (e: Throwable) {}; nap(5000, g) }
     }
-    // pehla tunnel connect hote hi VPN chalu, baaki background mein judte rahenge
+    // the VPN starts as soon as the first tunnel connects; the rest keep joining in the background
     while (alive(g) && sess.none { it.isConnected }) Thread.sleep(500)
     if (!alive(g)) return
-    LogBus.add("Pehla tunnel connect - VPN chalu")
+    LogBus.add("First tunnel connected - starting VPN")
     synchronized(NATIVE) {
       if (!alive(g)) return
       val mtu = getSharedPreferences("a", 0).getInt("mtu", 1500).coerceIn(576, 1500)
@@ -174,7 +174,7 @@ class VpnSvc : VpnService() {
 
   private class Link(val p: Process, val s: Session)
 
-  // Khali local port: pehle pasand wala (pref), busy ho (jaise Termux ne le rakha) to khud koi khali port
+  // Free local port: the preferred one first; if it is busy (e.g. taken by Termux) any free port
   private fun pickPort(pref: Int): Int {
     val lo = InetAddress.getByName("127.0.0.1")
     if (pref in 1024..65535) {
@@ -187,11 +187,11 @@ class VpnSvc : VpnService() {
   private fun bindSocks(pref: Int): ServerSocket {
     val lo = InetAddress.getByName("127.0.0.1")
     try { return ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(lo, pref), 50) } } catch (e: Exception) {}
-    LogBus.add("SOCKS port $pref busy hai - khali port le raha hoon")
+    LogBus.add("SOCKS port $pref is busy - picking a free port")
     return ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(lo, 0), 50) }
   }
 
-  // Asli end-to-end check: SSH ke andar direct-tcpip channel kholke server tak round trip (koi data nahi bhejta)
+  // Real end-to-end check: opens a direct-tcpip channel inside SSH and does a round trip to the server (sends no data)
   private fun probe(s: Session, ms: Int): Boolean {
     return try {
       val ch = s.openChannel("direct-tcpip") as ChannelDirectTCPIP
@@ -202,12 +202,12 @@ class VpnSvc : VpnService() {
     } catch (e: Throwable) { false }
   }
 
-  // Ek dnstt + SSH jodta hai. Fail par exception.
+  // Connects one dnstt + SSH pair. Throws on failure.
   private fun openLink(ns: String, pub: String, user: String, pass: String, rs: String, pref: Int, label: String, g: Int): Link {
     val pr = getSharedPreferences("a", 0)
     val to = pr.getInt("to", 20).coerceIn(5, 300) * 1000
     val pay = pr.getInt("pay", 1232).coerceIn(512, 4096)
-    val dmtu = pr.getInt("dmtu", 0).coerceIn(0, 1500)  // 0 = flag hi nahi dete, dnstt apna default use karega
+    val dmtu = pr.getInt("dmtu", 0).coerceIn(0, 1500)  // 0 = do not pass the flag; dnstt uses its own default
     var bin = File(applicationInfo.nativeLibraryDir, if (pr.getBoolean("low", false)) "libdnstt_low.so" else "libdnstt.so")
     if (!bin.exists()) bin = File(applicationInfo.nativeLibraryDir, "libdnstt.so")
     val port = pickPort(pref)
@@ -229,13 +229,13 @@ class VpnSvc : VpnService() {
       nap(3000, g)
       val tDnstt = System.currentTimeMillis() - t0
       if (!alive(g)) throw Exception("stop")
-      if (!p.isAlive) throw Exception("dnstt process turant band ho gaya (${tDnstt}ms mein) - binary/arch ya target ka issue ho sakta hai")
-      LogBus.add("[$label] dnstt process up (${tDnstt}ms) - ab SSH handshake dns-target=$target ke through...")
+      if (!p.isAlive) throw Exception("dnstt process exited immediately (after ${tDnstt}ms) - possible binary/arch or dns-target issue")
+      LogBus.add("[$label] dnstt process up (${tDnstt}ms) - starting SSH handshake via dns-target=$target...")
       val tSsh0 = System.currentTimeMillis()
       val x = JSch().getSession(user, "127.0.0.1", port)
       s = x
       x.setPassword(pass); x.setConfig("StrictHostKeyChecking", "no")
-      // network/airplane toggle par jaldi na girao: ~4 min tak sabr (active check isse pehle pakad leta hai)
+      // do not drop quickly on a network/airplane-mode toggle: be patient for ~4 min (the active check catches it earlier)
       x.setServerAliveInterval(30000); x.setServerAliveCountMax(8)
       x.connect(to)
       val tSsh = System.currentTimeMillis() - tSsh0
@@ -245,11 +245,11 @@ class VpnSvc : VpnService() {
       val tTotal = System.currentTimeMillis() - t0
       val msg = e.message ?: e.toString()
       val reason = when {
-        msg.contains("Auth fail", true) || msg.contains("USERAUTH_FAILURE", true) -> "AUTH FAIL - user/password galat"
-        msg.contains("timeout", true) -> "TIMEOUT - dns-target ($target) se response nahi mila ya bahut slow"
-        msg.contains("stop") -> "VPN band ho raha tha, isliye cancel"
-        msg.contains("turant band") -> msg
-        msg.contains("refused", true) -> "CONNECTION REFUSED - server/port galat ho sakta hai"
+        msg.contains("Auth fail", true) || msg.contains("USERAUTH_FAILURE", true) -> "AUTH FAIL - wrong username/password"
+        msg.contains("timeout", true) -> "TIMEOUT - no response from dns-target ($target), or it is too slow"
+        msg.contains("stop") -> "VPN was stopping, so this was cancelled"
+        msg.contains("exited immediately") -> msg
+        msg.contains("refused", true) -> "CONNECTION REFUSED - the server/port may be wrong"
         else -> "ERROR - $msg"
       }
       LogBus.add("[$label] CONNECT FAIL (${tTotal}ms) | dns-target=$target | domain=$ns | $reason")
@@ -267,8 +267,8 @@ class VpnSvc : VpnService() {
     procs.remove(l.p); l.p.destroy()
   }
 
-  // ---- UDP relay: dnstt -> relay -> resolver. Saare tunnel ki queries ek jagah se guzarti hain,
-  // yahan total query/sec limit lagti hai aur gin-ti hoti hai (Logs mein dikhti hai).
+  // ---- UDP relay: dnstt -> relay -> resolver. All tunnels' queries pass through here,
+  // which is where the total queries/sec limit is applied and counted (shown in Logs).
   private fun gate(qps: Int): Boolean {
     if (qps <= 0) return true
     val per = 1_000_000_000L / qps
@@ -277,7 +277,7 @@ class VpnSvc : VpnService() {
       val now = System.nanoTime()
       if (gateNext < now) gateNext = now
       waitNs = gateNext - now
-      if (waitNs > 400_000_000L) return false   // bahut purani ho gayi, dnstt khud dobara bhejega
+      if (waitNs > 400_000_000L) return false   // too old by now, dnstt will resend it itself
       gateNext += per
     }
     if (waitNs > 1_000_000L) try { Thread.sleep(waitNs / 1_000_000, (waitNs % 1_000_000).toInt()) } catch (e: InterruptedException) {}
@@ -331,7 +331,7 @@ class VpnSvc : VpnService() {
   }
   private val serial = AtomicInteger()
 
-  // Ek account ke saare tunnel (n) ek saath judna shuru
+  // Starts connecting all (n) tunnels of one account at once
   private fun launch(a: Acct, g: Int): Group {
     val grp = Group(a)
     val tbase = getSharedPreferences("a", 0).getInt("tport", 2000).coerceIn(1024, 63000)
@@ -361,8 +361,8 @@ class VpnSvc : VpnService() {
     synchronized(grp) { grp.closed = true; grp.links.forEach { closeLink(it) }; grp.links.clear() }
   }
 
-  // Account rotation: har "rint" second baad agla account (user/password/server ke saath) judta hai,
-  // jaise hi woh judta hai purana account band. Beech mein VPN band nahi hota.
+  // Account rotation: every "rint" seconds the next account (with its own user/password/server) connects,
+  // and as soon as it is up the previous account is closed. The VPN never goes down in between.
   private fun rotate(accs: List<Acct>, g: Int) {
     var ci = -1; var next = 0
     var cur: Group? = null
@@ -378,20 +378,20 @@ class VpnSvc : VpnService() {
         if (!dead && !timeUp) { nap(500, g); continue }
       }
       val a = accs[next]
-      if (c != null) LogBus.add("Account ${accs[ci].no} -> Account ${a.no}: naya account judta hai...")
+      if (c != null) LogBus.add("Account ${accs[ci].no} -> Account ${a.no}: connecting the new account...")
       val grp = launch(a, g)
       val wait = pr.getInt("to", 20).coerceIn(5, 300) * 1000L + 10000L
       val t0 = System.currentTimeMillis()
       while (alive(g) && grp.links.isEmpty() && grp.pending.get() > 0 && System.currentTimeMillis() - t0 < wait) Thread.sleep(200)
       if (!alive(g)) { closeGroup(grp); break }
       if (grp.links.isNotEmpty()) {
-        if (c != null) { closeGroup(c); LogBus.add("Account ${accs[ci].no} band, Account ${a.no} chal raha hai") }
-        else LogBus.add("Account ${a.no} chal raha hai")
+        if (c != null) { closeGroup(c); LogBus.add("Account ${accs[ci].no} closed, Account ${a.no} is running") }
+        else LogBus.add("Account ${a.no} is running")
         cur = grp; ci = next; next = (next + 1) % accs.size; since = System.currentTimeMillis(); total = a.n; fails = 0
       } else {
         closeGroup(grp)
         fails++
-        LogBus.add("Account ${a.no} connect nahi hua" + (if (c != null) " - purana chalne do" else ""))
+        LogBus.add("Account ${a.no} failed to connect" + (if (c != null) " - keeping the old one running" else ""))
         next = (next + 1) % accs.size
         nap((3000L * fails).coerceAtMost(15000L), g)
       }
@@ -399,8 +399,8 @@ class VpnSvc : VpnService() {
     cur?.let { closeGroup(it) }
   }
 
-  // Har tunnel: connect -> har "chk" second pe health check -> kharab mile to PEHLE naya tunnel,
-  // phir purana band (make-before-break). VPN (tun) kabhi band nahi hota, baaki tunnel chalte rehte hain.
+  // Each tunnel: connect -> health check every "chk" seconds -> if bad, open a NEW tunnel FIRST,
+  // then close the old one (make-before-break). The VPN (tun) never goes down; the other tunnels keep running.
   private fun tunnel(ns: String, pub: String, user: String, pass: String, dns: String, pref: Int, label: String, g: Int) {
     var wait = 3000L
     var miss = 0
@@ -417,7 +417,7 @@ class VpnSvc : VpnService() {
           reg(n); cur = n; wait = 3000L; miss = 0; linkSince = System.currentTimeMillis()
           LogBus.add("[$label] connected | resolver=$rs")
         } catch (e: Exception) {
-          if (alive(g)) LogBus.add("[$label] fail: ${e.message} - ${wait / 1000}s baad retry")
+          if (alive(g)) LogBus.add("[$label] fail: ${e.message} - retrying in ${wait / 1000}s")
           nap(wait, g); wait = (wait * 2).coerceAtMost(maxMs)
         }
         continue
@@ -435,16 +435,16 @@ class VpnSvc : VpnService() {
         miss++
         if (miss < need) { suspect.add(l.s); continue }
       }
-      val reason = if (timeUp) "session-break (${sbreak / 1000}s) - naya resolver/tunnel le rahe, counter reset ke liye" else "tuta/atka"
-      LogBus.add("[$label] $reason - pehle naya tunnel, phir purana band")
+      val reason = if (timeUp) "session break (${sbreak / 1000}s) - rotating to a new resolver/tunnel to reset counters" else "dropped/stuck"
+      LogBus.add("[$label] $reason - opening a new tunnel first, then closing the old one")
       suspect.add(l.s); miss = 0
       val rs = pickResolver(dns)
       try {
         val n = openLink(ns, pub, user, pass, rs, pref, label, g)
         reg(n); cur = n; closeLink(l); wait = 3000L; linkSince = System.currentTimeMillis()
-        LogBus.add("[$label] naya tunnel connected (resolver=$rs), purana hata diya")
+        LogBus.add("[$label] new tunnel connected (resolver=$rs), old one removed")
       } catch (e: Exception) {
-        if (alive(g)) LogBus.add("[$label] reconnect fail: ${e.message} - ${wait / 1000}s baad retry")
+        if (alive(g)) LogBus.add("[$label] reconnect failed: ${e.message} - retrying in ${wait / 1000}s")
         closeLink(l); cur = null
         nap(wait, g); wait = (wait * 2).coerceAtMost(maxMs)
       }
@@ -452,7 +452,7 @@ class VpnSvc : VpnService() {
     cur?.let { closeLink(it) }
   }
 
-  // Sabse kam busy tunnel chunta hai (barabar hone par baari-baari)
+  // Picks the least busy tunnel (round-robin on ties)
   private fun acquire(): Session? {
     val l0 = sess.filter { it.isConnected }
     val l = l0.filter { it !in suspect }.ifEmpty { l0 }
@@ -493,7 +493,7 @@ class VpnSvc : VpnService() {
     }
   }
 
-  // DNS (UDP 53) ko SSH ke andar TCP DNS bana ke bhejta hai
+  // Sends DNS (UDP 53) as TCP DNS inside SSH
   private fun udp(c: Socket, o: OutputStream) {
     val d = DatagramSocket(0, InetAddress.getByName("127.0.0.1")); val pt = d.localPort
     o.write(byteArrayOf(5, 0, 0, 1, 127, 0, 0, 1, (pt shr 8).toByte(), pt.toByte()))

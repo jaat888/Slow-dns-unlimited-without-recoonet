@@ -13,7 +13,7 @@ object Stats {
   fun reset() { up.set(0); down.set(0); since = System.currentTimeMillis() }
 }
 
-// Speed limit (Mbps). Upload aur download dono par alag alag lagta hai.
+// Speed limit (Mbps). Applied separately to upload and download.
 object Limit {
   @Volatile var bps = 0L
   fun load(p: SharedPreferences) {
