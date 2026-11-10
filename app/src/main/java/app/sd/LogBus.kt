@@ -8,7 +8,7 @@ import java.util.Locale
 object LogBus {
   private const val AUTO_CLEAR_MS = 3 * 60 * 1000L   // screen ka log har 3 minute mein saaf
   private val q = ArrayDeque<String>()
-  private val f = SimpleDateFormat("HH:mm:ss", Locale.US)
+  private val f = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
   private var last = System.currentTimeMillis()
   private var file: File? = null
   private var ready = false
@@ -34,8 +34,8 @@ object LogBus {
   @Synchronized fun add(s: String) {
     auto()
     val line = "${f.format(Date())}  $s"
-    q.add(line); while (q.size > 400) q.removeFirst()
-    try { file?.let { if (it.length() > 60000) it.writeText(""); it.appendText(line + "\n") } } catch (e: Throwable) {}
+    q.add(line); while (q.size > 800) q.removeFirst()
+    try { file?.let { if (it.length() > 150000) it.writeText(""); it.appendText(line + "\n") } } catch (e: Throwable) {}
   }
   @Synchronized fun text(): String { auto(); return q.joinToString("\n") }
   @Synchronized fun clear() { q.clear(); last = System.currentTimeMillis() }

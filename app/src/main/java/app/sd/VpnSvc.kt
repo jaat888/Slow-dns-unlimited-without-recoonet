@@ -201,7 +201,9 @@ class VpnSvc : VpnService() {
     val port = pickPort(pref)
     val qps = pr.getInt("qps", 0).coerceIn(0, 5000)
     val target = if (qps > 0) "127.0.0.1:" + relayFor(rs, g) else rs
-    LogBus.add("[$label] dnstt start via $target | local port $port | payload $pay" + (if (qps > 0) " | QPS limit $qps" else ""))
+    val t0 = System.currentTimeMillis()
+    LogBus.add("[$label] dnstt start | domain=$ns | dns-target=$target | local-port=$port | payload=$pay" +
+      " | low-load=${pr.getBoolean("low", false)}" + (if (qps > 0) " | relay-qps-limit=$qps" else "") + " | timeout=${to / 1000}s")
     val pb = ProcessBuilder(bin.path, "-udp", target, "-pubkey", pub, ns, "127.0.0.1:$port")
       .redirectErrorStream(true).redirectOutput(File("/dev/null"))
     pb.environment()["DNSTT_UDP_PAYLOAD"] = pay.toString()
@@ -210,16 +212,32 @@ class VpnSvc : VpnService() {
     var s: Session? = null
     try {
       nap(3000, g)
+      val tDnstt = System.currentTimeMillis() - t0
       if (!alive(g)) throw Exception("stop")
-      if (!p.isAlive) throw Exception("dnstt turant band ho gaya")
+      if (!p.isAlive) throw Exception("dnstt process turant band ho gaya (${tDnstt}ms mein) - binary/arch ya target ka issue ho sakta hai")
+      LogBus.add("[$label] dnstt process up (${tDnstt}ms) - ab SSH handshake dns-target=$target ke through...")
+      val tSsh0 = System.currentTimeMillis()
       val x = JSch().getSession(user, "127.0.0.1", port)
       s = x
       x.setPassword(pass); x.setConfig("StrictHostKeyChecking", "no")
       // network/airplane toggle par jaldi na girao: ~4 min tak sabr (active check isse pehle pakad leta hai)
       x.setServerAliveInterval(30000); x.setServerAliveCountMax(8)
       x.connect(to)
+      val tSsh = System.currentTimeMillis() - tSsh0
+      LogBus.add("[$label] SSH auth OK (${tSsh}ms) | total connect ${System.currentTimeMillis() - t0}ms | user=$user")
       return Link(p, x)
     } catch (e: Exception) {
+      val tTotal = System.currentTimeMillis() - t0
+      val msg = e.message ?: e.toString()
+      val reason = when {
+        msg.contains("Auth fail", true) || msg.contains("USERAUTH_FAILURE", true) -> "AUTH FAIL - user/password galat"
+        msg.contains("timeout", true) -> "TIMEOUT - dns-target ($target) se response nahi mila ya bahut slow"
+        msg.contains("stop") -> "VPN band ho raha tha, isliye cancel"
+        msg.contains("turant band") -> msg
+        msg.contains("refused", true) -> "CONNECTION REFUSED - server/port galat ho sakta hai"
+        else -> "ERROR - $msg"
+      }
+      LogBus.add("[$label] CONNECT FAIL (${tTotal}ms) | dns-target=$target | domain=$ns | $reason")
       try { s?.disconnect() } catch (z: Exception) {}
       p.destroy(); procs.remove(p)
       throw e
