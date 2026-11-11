@@ -95,40 +95,46 @@ internal class PowerIcon(ctx: Context) : View(ctx) {
 class MainActivity : Activity() {
   private val h = Handler(Looper.getMainLooper())
   private lateinit var P: SharedPreferences
-  private var dark = true
+  private var dark = false
 
   // ---------- Theme ----------
-  private val bg get() = if (dark) 0xFF0A0E14.toInt() else 0xFFF1F4F9.toInt()
-  private val cardC get() = if (dark) 0xFF121821.toInt() else 0xFFFFFFFF.toInt()
-  private val fieldC get() = if (dark) 0xFF1B2330.toInt() else 0xFFEBEFF5.toInt()
-  private val strokeC get() = if (dark) 0xFF222C3A.toInt() else 0xFFDDE3EC.toInt()
-  private val fg get() = if (dark) 0xFFE8EEF7.toInt() else 0xFF0F172A.toInt()
-  private val sub get() = if (dark) 0xFF8794A8.toInt() else 0xFF64748B.toInt()
-  private val acc get() = if (dark) 0xFF2DD4A7.toInt() else 0xFF0EA67F.toInt()
-  private val ink = 0xFF04110C.toInt()
+  private val bg get() = if (dark) 0xFF0B1020.toInt() else 0xFFF4F7FC.toInt()
+  private val cardC get() = if (dark) 0xFF141B30.toInt() else 0xFFFFFFFF.toInt()
+  private val fieldC get() = if (dark) 0xFF1C2542.toInt() else 0xFFEEF2FC.toInt()
+  private val strokeC get() = if (dark) 0xFF263052.toInt() else 0xFFE3E9F6.toInt()
+  private val fg get() = if (dark) 0xFFEAF0FF.toInt() else 0xFF0F1630.toInt()
+  private val sub get() = if (dark) 0xFF8E9ABB.toInt() else 0xFF6A7490.toInt()
+  private val acc get() = if (dark) 0xFF3B82F6.toInt() else 0xFF2563EB.toInt()
+  private val ink = 0xFFFFFFFF.toInt()
   private val red = 0xFFEF4444.toInt()
   private val amber = 0xFFF59E0B.toInt()
-  private val blue = 0xFF3B82F6.toInt()
-  private val violet = 0xFF7C5CFC.toInt()
+  private val deep = 0xFF1E3A8A.toInt()
+  private val white = 0xFFFFFFFF.toInt()
+  private val whiteDim = 0xCCFFFFFF.toInt()
 
   private class Acc(val v: LinearLayout, val title: TextView, val ns: EditText, val pk: EditText, val us: EditText,
                     val pw: EditText, val dns: EditText, val n: Spinner, val sw: Switch, val ctl: List<View>) {
     var role = ""; var srv = ""; var exp = 0L
     lateinit var info: TextView
+    lateinit var sumT: TextView; lateinit var sumI: TextView; lateinit var sumS: TextView; lateinit var sumV: View
   }
 
   private val accs = mutableListOf<Acc>()
   private lateinit var accBox: LinearLayout
+  private lateinit var detailHolder: LinearLayout
+  private lateinit var accListV: View
+  private lateinit var accDetailV: ScrollView
   private lateinit var statusTv: TextView
   private lateinit var subTv: TextView
   private lateinit var hintTv: TextView
   private lateinit var summaryTv: TextView
   private lateinit var heroBtn: FrameLayout
-  private lateinit var glow: View
-  private lateinit var ring: View
-  private lateinit var inner: View
+  private lateinit var heroCard: LinearLayout
+  private lateinit var statePill: TextView
+  private lateinit var connectLbl: TextView
   private lateinit var powerIcon: PowerIcon
-  private var pulse: ObjectAnimator? = null
+  private val settingCommits = ArrayList<() -> Unit>()
+  private val helpNotes = ArrayList<Pair<String, String>>()
   private var heroState = -1
   private var pending: Boolean? = null
   private var pendingT = 0L
@@ -163,12 +169,12 @@ class MainActivity : Activity() {
 
   private fun et(hint: String, v: String = "") = EditText(this).apply {
     this.hint = hint; setText(v); setSingleLine(); setTextColor(fg); setHintTextColor(sub); textSize = 14f
-    background = rr(fieldC, 10, strokeC); setPadding(dp(14), dp(11), dp(14), dp(11)); layoutParams = lp(6)
+    background = rr(fieldC, 14, strokeC); setPadding(dp(16), dp(12), dp(16), dp(12)); layoutParams = lp(6)
   }
 
   private fun pill(t: String, bgc: Int, fgc: Int, f: () -> Unit) = Button(this).apply {
     text = t; isAllCaps = false; setTextColor(fgc); textSize = 14f; setTypeface(typeface, Typeface.BOLD)
-    background = rr(bgc, 12); stateListAnimator = null; minHeight = 0; minimumHeight = 0
+    background = rr(bgc, 16); stateListAnimator = null; minHeight = 0; minimumHeight = 0
     setPadding(dp(12), 0, dp(12), 0); setOnClickListener { f() }
     layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f).apply { setMargins(dp(3), dp(8), dp(3), 0) }
   }
@@ -186,11 +192,26 @@ class MainActivity : Activity() {
   private fun row(vararg v: View) = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; v.forEach { addView(it) } }
 
   private fun card(top: Int = 12) = LinearLayout(this).apply {
-    orientation = LinearLayout.VERTICAL; background = rr(cardC, 18, strokeC)
-    setPadding(dp(16), dp(14), dp(16), dp(16)); layoutParams = lp(top)
+    orientation = LinearLayout.VERTICAL; background = rr(cardC, 22, strokeC); elevation = dp(2).toFloat()
+    setPadding(dp(18), dp(16), dp(18), dp(18)); layoutParams = lp(top)
   }
 
-  private fun secTitle(t: String) = tv(t.uppercase(), 11f, acc, true).apply { letterSpacing = 0.12f }
+  private fun secTitle(t: String) = tv(t, 16f, fg, true).apply {
+    val bar = GradientDrawable().apply { setColor(acc); cornerRadius = dp(2).toFloat(); setSize(dp(4), dp(18)) }
+    setCompoundDrawablesWithIntrinsicBounds(bar, null, null, null); compoundDrawablePadding = dp(10)
+  }
+
+  private fun tintBg(c: Int, a: Int = 0x26) = (c and 0x00FFFFFF) or (a shl 24)
+
+  private fun badge(g: String, size: Int = 30, c: Int = acc) = TextView(this).apply {
+    text = g; gravity = Gravity.CENTER; setTextColor(c); textSize = if (size >= 40) 13f else 14f; setTypeface(typeface, Typeface.BOLD)
+    background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(tintBg(c)) }
+    layoutParams = LinearLayout.LayoutParams(dp(size), dp(size))
+  }
+
+  private fun divider() = View(this).apply {
+    setBackgroundColor(strokeC); layoutParams = LinearLayout.LayoutParams(-1, dp(1)).apply { topMargin = dp(12) }
+  }
 
   private fun pageCol() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(22), dp(16), dp(28)) }
 
@@ -208,70 +229,101 @@ class MainActivity : Activity() {
   }
 
   // ---------- Home ----------
-  private fun statCard(label: String, big: TextView, small: TextView) = LinearLayout(this).apply {
-    orientation = LinearLayout.VERTICAL; background = rr(cardC, 16, strokeC); setPadding(dp(14), dp(12), dp(14), dp(12))
-    layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), dp(8), dp(4), 0) }
-    addView(tv(label, 12f, sub)); addView(big.apply { setPadding(0, dp(4), 0, dp(2)) }); addView(small)
+  private fun statCard(glyph: String, label: String, big: TextView, small: TextView) = LinearLayout(this).apply {
+    orientation = LinearLayout.VERTICAL; background = rr(cardC, 22, strokeC); elevation = dp(2).toFloat()
+    setPadding(dp(16), dp(14), dp(16), dp(14))
+    layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), dp(10), dp(4), 0) }
+    addView(row(badge(glyph), tv(label, 13f, sub).apply { setPadding(dp(8), 0, 0, 0) }).apply { gravity = Gravity.CENTER_VERTICAL })
+    addView(big.apply { setPadding(0, dp(10), 0, dp(2)) }); addView(small)
+  }
+
+  private fun heroTile(label: String, big: TextView, small: TextView) = LinearLayout(this).apply {
+    orientation = LinearLayout.VERTICAL; background = rr(0x2EFFFFFF, 16); setPadding(dp(14), dp(12), dp(14), dp(12))
+    layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), 0, dp(4), 0) }
+    addView(tv(label, 12f, whiteDim)); addView(big.apply { setPadding(0, dp(4), 0, dp(2)) }); addView(small)
+  }
+
+  private fun chip(t: String, f: () -> Unit) = TextView(this).apply {
+    text = t; textSize = 14f; gravity = Gravity.CENTER; setTextColor(acc); setTypeface(typeface, Typeface.BOLD)
+    background = rr(fieldC, 16)
+    layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(4), 0, dp(4), 0) }
+    setOnClickListener { f() }
   }
 
   private fun buildHome(): View {
     val col = pageCol()
-    col.addView(row(
-      logo(44),
-      LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0)
-        addView(tv("Mollad DNS", 22f, fg, true)); addView(tv("DNS tunnel VPN", 12f, sub))
-      }).apply { gravity = Gravity.CENTER_VERTICAL })
-
-    // Big connect button
-    glow = View(this).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(sub) }; alpha = 0f }
-    ring = View(this)
-    inner = View(this)
-    powerIcon = PowerIcon(this)
-    heroBtn = FrameLayout(this).apply {
-      layoutParams = LinearLayout.LayoutParams(dp(240), dp(240)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(18) }
-      addView(glow, FrameLayout.LayoutParams(dp(240), dp(240), Gravity.CENTER))
-      addView(ring, FrameLayout.LayoutParams(dp(204), dp(204), Gravity.CENTER))
-      addView(inner, FrameLayout.LayoutParams(dp(172), dp(172), Gravity.CENTER))
-      addView(powerIcon, FrameLayout.LayoutParams(dp(64), dp(64), Gravity.CENTER))
-      setOnClickListener { toggle() }
+    val themeChip = TextView(this).apply {
+      text = if (dark) "LIGHT" else "DARK"; textSize = 12f; setTypeface(typeface, Typeface.BOLD); setTextColor(acc)
+      background = rr(fieldC, 20); setPadding(dp(14), dp(8), dp(14), dp(8))
+      setOnClickListener { P.edit().putBoolean("dark", !dark).apply(); icon(!dark); save(); recreate() }
     }
-    col.addView(heroBtn)
+    col.addView(row(
+      logo(40),
+      tv("Mollad DNS", 18f, fg, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12) } },
+      themeChip).apply { gravity = Gravity.CENTER_VERTICAL })
+    col.addView(tv("Your connection", 30f, fg, true).apply { layoutParams = lp(22) })
+    col.addView(tv("Choose an account. Connect on your terms.", 14f, sub).apply { layoutParams = lp(2) })
 
-    statusTv = tv("Disconnected", 24f, fg, true).apply { gravity = Gravity.CENTER; layoutParams = lp(14) }
-    subTv = tv("Tap the button to connect", 13f, sub).apply { gravity = Gravity.CENTER; layoutParams = lp(2) }
-    col.addView(statusTv); col.addView(subTv)
+    // Status card
+    statePill = tv("Disconnected", 12f, white, true).apply { setPadding(dp(14), dp(6), dp(14), dp(6)); background = rr(0x40FFFFFF, 20) }
+    statusTv = tv("Ready when you are", 28f, white, true).apply { layoutParams = lp(16) }
+    subTv = tv("Tap Connect to start", 13f, whiteDim).apply { layoutParams = lp(2) }
+    val line = View(this).apply { setBackgroundColor(0x55FFFFFF); layoutParams = LinearLayout.LayoutParams(-1, dp(2)).apply { topMargin = dp(16); bottomMargin = dp(16) } }
+    fun bigW() = tv("0", 20f, white, true)
+    fun smW() = tv("", 11f, whiteDim)
+    upBig = bigW(); upSm = smW(); dnBig = bigW(); dnSm = smW()
+    heroCard = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(20), dp(20), dp(20)); layoutParams = lp(20)
+      addView(statePill, LinearLayout.LayoutParams(-2, -2))
+      addView(statusTv); addView(subTv); addView(line)
+      addView(row(heroTile("↓  Download", dnBig, dnSm), heroTile("↑  Upload", upBig, upSm)))
+    }
+    col.addView(heroCard)
 
     fun big() = tv("0", 21f, fg, true)
     fun sm() = tv("", 11f, sub)
-    upBig = big(); upSm = sm(); dnBig = big(); dnSm = sm(); coBig = big(); coSm = sm(); tmBig = big(); tmSm = sm()
-    col.addView(row(statCard("↑  Upload", upBig, upSm), statCard("↓  Download", dnBig, dnSm)).apply { layoutParams = lp(18) })
-    col.addView(row(statCard("Tunnels", coBig, coSm), statCard("Session time", tmBig, tmSm)))
+    coBig = big(); coSm = sm(); tmBig = big(); tmSm = sm()
+    col.addView(row(statCard("⇄", "Tunnels", coBig, coSm), statCard("◷", "Session time", tmBig, tmSm)))
+
+    col.addView(row(chip("Accounts") { show(1) }, chip("Logs") { show(2) }, chip("Settings") { show(3) }).apply { layoutParams = lp(14) })
 
     summaryTv = tv("", 13f, fg).apply { setLineSpacing(0f, 1.2f) }
     col.addView(card(14).apply { addView(secTitle("Active accounts")); addView(summaryTv.apply { layoutParams = lp(8) }) })
-    return ScrollView(this).apply { addView(col) }
+
+    // Sticky connect button
+    powerIcon = PowerIcon(this).apply { color = white }
+    connectLbl = tv("Connect", 18f, white, true)
+    heroBtn = FrameLayout(this).apply {
+      layoutParams = LinearLayout.LayoutParams(-1, dp(58)).apply { setMargins(dp(16), dp(8), dp(16), dp(12)) }; elevation = dp(6).toFloat()
+      addView(LinearLayout(this@MainActivity).apply {
+        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+        addView(powerIcon, LinearLayout.LayoutParams(dp(22), dp(22)).apply { rightMargin = dp(10) })
+        addView(connectLbl)
+      }, FrameLayout.LayoutParams(-1, -1))
+      setOnClickListener { toggle() }
+    }
+    val scroll = ScrollView(this).apply { addView(col); layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) }
+    return LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(scroll); addView(heroBtn) }
   }
 
   private fun setHero(state: Int) {
     if (state == heroState) return
     heroState = state
-    val col = when (state) { 2 -> acc; 1, 3 -> amber; else -> sub }
-    ring.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0); setStroke(dp(3), col) }
-    inner.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(if (state == 2) acc else cardC) }
-    (glow.background as GradientDrawable).setColor(col)
-    powerIcon.color = if (state == 2) ink else col
-    powerIcon.invalidate()
-    pulse?.cancel()
-    if (state == 0) { glow.alpha = 0f; glow.scaleX = 1f; glow.scaleY = 1f }
-    else {
-      pulse = ObjectAnimator.ofPropertyValuesHolder(
-        glow,
-        PropertyValuesHolder.ofFloat(View.SCALE_X, 0.84f, 1f),
-        PropertyValuesHolder.ofFloat(View.SCALE_Y, 0.84f, 1f),
-        PropertyValuesHolder.ofFloat(View.ALPHA, 0.38f, 0.06f)
-      ).apply { duration = 1400; repeatCount = ValueAnimator.INFINITE; repeatMode = ValueAnimator.REVERSE; start() }
+    val c1: Int; val c2: Int
+    when (state) {
+      2 -> { c1 = 0xFF047857.toInt(); c2 = 0xFF10B981.toInt() }
+      1, 3 -> { c1 = 0xFFB45309.toInt(); c2 = 0xFFF59E0B.toInt() }
+      else -> { c1 = 0xFF13294F.toInt(); c2 = 0xFF2F63C8.toInt() }
     }
+    val base = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c1, c2)).apply { cornerRadius = dp(30).toFloat() }
+    val glowL = GradientDrawable().apply {
+      colors = intArrayOf(0x40FFFFFF, 0x00FFFFFF); gradientType = GradientDrawable.RADIAL_GRADIENT
+      gradientRadius = dp(260).toFloat(); setGradientCenter(1f, 0f); cornerRadius = dp(30).toFloat()
+    }
+    heroCard.background = android.graphics.drawable.LayerDrawable(arrayOf<android.graphics.drawable.Drawable>(base, glowL))
+    heroCard.elevation = dp(6).toFloat()
+    heroBtn.background = rr(if (state == 2) red else acc, 29)
+    connectLbl.text = when (state) { 2 -> "Disconnect"; 1 -> "Connecting..."; 3 -> "Disconnecting..."; else -> "Connect" }
   }
 
   // ---------- Accounts ----------
@@ -303,30 +355,61 @@ class MainActivity : Activity() {
     lateinit var self: Acc
     val clone = btn("Clone", fieldC) {
       val j = js(self).put("role", "").put("srv", "").put("exp", 0L)
-      addCard(j, accs.indexOf(self) + 1); renumber(); save()
+      addCard(j, accs.indexOf(self) + 1); closeDetail(); renumber(); save()
       toast("Cloned. Now change its DNS.")
     }
-    val del = btn("Delete", red) { accBox.removeView(c); accs.remove(self); renumber(); save() }
+    val del = btn("Delete", red) { accBox.removeView(self.sumV); detailHolder.removeView(c); accs.remove(self); closeDetail(); renumber(); save() }
 
     c.addView(row(
-      LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f); addView(title); addView(info) },
+      badge("DNS", 44),
+      LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12) }; addView(title); addView(info) },
       sw).apply { gravity = Gravity.CENTER_VERTICAL })
-    fun cap(t: String) = tv(t, 11f, sub).apply { layoutParams = lp(12) }
+    c.addView(divider())
+    fun cap(t: String) = tv(t, 12f, sub, true).apply { layoutParams = lp(14) }
     c.addView(cap("NS domain")); c.addView(ns)
     c.addView(cap("Public key")); c.addView(pk)
     c.addView(cap("Username")); c.addView(us)
-    c.addView(cap("Password")); c.addView(pw)
+    c.addView(cap("Password"))
+    val eye = tv("Show", 13f, acc, true).apply {
+      setPadding(dp(14), dp(12), dp(4), dp(12))
+      setOnClickListener {
+        val show = text.toString() == "Show"
+        val pos = pw.text.length
+        pw.inputType = InputType.TYPE_CLASS_TEXT or (if (show) InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD else InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        pw.setSelection(pos)
+        text = if (show) "Hide" else "Show"
+      }
+    }
+    pw.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+    c.addView(row(pw, eye).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(6) })
     c.addView(cap("UDP DNS resolver")); c.addView(dn)
     c.addView(row(tv("Parallel tunnels (1-20)", 13f, sub).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }, nWrap)
       .apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(14) })
     c.addView(row(clone, del))
     self = Acc(c, title, ns, pk, us, pw, dn, n, sw, listOf(ns, pk, us, pw, dn, n, clone, del))
     self.info = info
+    val sT = tv("", 16f, fg, true)
+    val sI = tv("", 12f, sub)
+    val sS = tv("ON", 11f, white, true).apply { gravity = Gravity.CENTER; setPadding(dp(10), dp(4), dp(10), dp(4)) }
+    val sV = LinearLayout(this).apply {
+      orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+      background = rr(cardC, 22, strokeC); elevation = dp(2).toFloat()
+      setPadding(dp(16), dp(14), dp(16), dp(14)); layoutParams = lp(10)
+      addView(badge("DNS", 44))
+      addView(LinearLayout(this@MainActivity).apply {
+        orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12) }
+        addView(sT); addView(sI)
+      })
+      addView(sS)
+      addView(tv("›", 24f, sub, true).apply { setPadding(dp(10), 0, 0, 0) })
+      setOnClickListener { openDetail(self) }
+    }
+    self.sumT = sT; self.sumI = sI; self.sumS = sS; self.sumV = sV
     self.role = a?.optString("role") ?: ""; self.srv = a?.optString("srv") ?: ""; self.exp = a?.optLong("exp", 0L) ?: 0L
     sw.setOnCheckedChangeListener { v, ck ->
       if (VpnSvc.running && !rev) { rev = true; v.isChecked = !ck; rev = false; toast("Stop the VPN first, then switch accounts ON/OFF") }
     }
-    accBox.addView(c, at); accs.add(at, self); renumber()
+    accBox.addView(sV, at); c.visibility = View.GONE; detailHolder.addView(c); accs.add(at, self); renumber()
   }
 
   private fun remainTxt(exp: Long): String {
@@ -346,6 +429,11 @@ class MainActivity : Activity() {
       a.info.visibility = if (parts.isEmpty()) View.GONE else View.VISIBLE
       a.info.text = parts.joinToString("  ·  ")
       a.info.setTextColor(if (a.exp > 0 && a.exp < now) red else acc)
+      a.sumT.text = a.title.text
+      a.sumI.text = if (parts.isEmpty()) a.ns.text.toString().ifBlank { "Not set up yet" } else parts.joinToString("  ·  ")
+      a.sumI.setTextColor(if (a.exp > 0 && a.exp < now) red else sub)
+      a.sumS.text = if (a.sw.isChecked) "ON" else "OFF"
+      a.sumS.background = rr(if (a.sw.isChecked) 0xFF10B981.toInt() else sub, 12)
     }
   }
 
@@ -359,6 +447,22 @@ class MainActivity : Activity() {
     P.edit().putString("acc2", arr.toString()).apply()
   }
 
+  private fun openDetail(a: Acc) {
+    for (i in 0 until detailHolder.childCount) detailHolder.getChildAt(i).visibility = View.GONE
+    a.v.visibility = View.VISIBLE
+    accListV.visibility = View.GONE; accDetailV.visibility = View.VISIBLE; accDetailV.scrollTo(0, 0)
+  }
+
+  private fun closeDetail() {
+    if (!::accDetailV.isInitialized) return
+    accDetailV.visibility = View.GONE; accListV.visibility = View.VISIBLE
+  }
+
+  @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+  override fun onBackPressed() {
+    if (::accDetailV.isInitialized && accDetailV.visibility == View.VISIBLE) closeDetail() else super.onBackPressed()
+  }
+
   private fun valid(a: Acc) = listOf(a.ns, a.pk, a.us, a.pw, a.dns).none { it.text.isNullOrBlank() }
 
   private fun buildAccounts(): View {
@@ -370,7 +474,7 @@ class MainActivity : Activity() {
     // VPNJantit helper card
     val vj = card(14)
     vj.addView(secTitle("VPNJantit auto accounts"))
-    vj.addView(tv("Creates free SSH + SlowDNS accounts for you (random username and password) and keeps a MAIN and a BACKUP account fresh.", 12f, sub).apply { layoutParams = lp(6); setLineSpacing(0f, 1.1f) })
+    vj.addView(tv("Creates and renews free accounts for you. Details are in Help.", 12f, sub).apply { layoutParams = lp(6); setLineSpacing(0f, 1.1f) })
     val vjAuto = tint(Switch(this)).apply {
       isChecked = P.getBoolean("vj_auto", false)
       setOnCheckedChangeListener { _, c ->
@@ -380,11 +484,20 @@ class MainActivity : Activity() {
       }
     }
     vj.addView(row(
-      tv("Auto-renew (MAIN + BACKUP)", 15f, fg, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }, vjAuto
+      tv("Auto-renew", 15f, fg, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }, vjAuto
     ).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(12) })
-    vj.addView(tv("An account is replaced about 4 hours before it expires. If a server is Full, the next server is tried; if all are full it waits for the 21:00 (GMT+7) reset. There is a 6-7 minute gap between two accounts. Android cannot open screens from the background, so when the app is closed you get a notification: tap it and the rest happens by itself. A captcha is shown only if the site asks for one.", 11f, sub).apply { layoutParams = lp(6); setLineSpacing(0f, 1.1f) })
+    val vjBk = tint(Switch(this)).apply {
+      isChecked = P.getBoolean("vj_backup", false)
+      setOnCheckedChangeListener { _, c ->
+        P.edit().putBoolean("vj_backup", c).apply()
+        toast(if (c) "A BACKUP account will be kept too" else "Only one account will be kept")
+      }
+    }
     vj.addView(row(
-      btn("Create account", violet) { pickVpnJantitServer() },
+      tv("Also keep a BACKUP account", 15f, fg, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }, vjBk
+    ).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(12) })
+    vj.addView(row(
+      btn("Create account", deep) { pickVpnJantitServer() },
       btn("Check now", fieldC) { vjHold = 0L; vjCheck(true) }))
     vj.addView(row(
       btn("Clear site cookies", fieldC) {
@@ -392,12 +505,22 @@ class MainActivity : Activity() {
       }))
     col.addView(vj)
 
+    detailHolder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     accBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-    addB = btn("+ Add account manually", blue) { addCard(null); save() }.apply { layoutParams = lp(14) }
+    addB = btn("+ Add account manually", deep) { addCard(null); save(); openDetail(accs.last()) }.apply { layoutParams = lp(14) }
     col.addView(accBox); col.addView(addB)
     val saved = try { JSONArray(P.getString("acc2", "[]")) } catch (e: Exception) { JSONArray() }
     if (saved.length() == 0) addCard(null) else for (i in 0 until saved.length()) addCard(saved.getJSONObject(i))
-    return ScrollView(this).apply { addView(col) }
+    val listV = ScrollView(this).apply { addView(col) }
+    val dcol = pageCol()
+    dcol.addView(tv("‹  Accounts", 15f, acc, true).apply {
+      background = rr(fieldC, 20); setPadding(dp(16), dp(9), dp(16), dp(9)); setOnClickListener { closeDetail() }
+      layoutParams = LinearLayout.LayoutParams(-2, -2)
+    })
+    dcol.addView(detailHolder)
+    accDetailV = ScrollView(this).apply { addView(dcol); visibility = View.GONE }
+    accListV = listV
+    return FrameLayout(this).apply { addView(listV); addView(accDetailV) }
   }
 
   // ---------- Logs ----------
@@ -407,80 +530,83 @@ class MainActivity : Activity() {
     col.addView(row(
       btn("Clear", fieldC) { LogBus.clear(); lastLog = ""; logTv.text = "" },
       btn("Copy log") { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("log", LogBus.text())); toast("Copied") }))
-    logTv = tv("", 11f, fg).apply { typeface = Typeface.MONOSPACE; setTextIsSelectable(true) }
+    logTv = tv("", 11.5f, fg).apply { typeface = Typeface.MONOSPACE; setTextIsSelectable(true) }
     logSv = ScrollView(this).apply {
-      addView(logTv); background = rr(cardC, 16, strokeC); setPadding(dp(12), dp(10), dp(12), dp(10))
+      addView(logTv); background = rr(if (dark) 0xFF0A0F1E.toInt() else 0xFFF3F6FC.toInt(), 22, strokeC); setPadding(dp(16), dp(14), dp(16), dp(14))
       layoutParams = LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(12) }
     }
     col.addView(logSv)
     return col
   }
 
-  // ---------- Settings ----------
+  // ---------- Settings (compact: long explanations live in Help) ----------
+  private fun settingLabel(title: String) = tv(title, 14f, fg, true).apply {
+    layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(10) }
+  }
+
   private fun numRow(col: LinearLayout, title: String, desc: String, key: String, def: Int, lo: Int, hi: Int) {
-    col.addView(tv(title, 15f, fg, true).apply { layoutParams = lp(16) })
-    col.addView(tv(desc, 12f, sub).apply { layoutParams = lp(2); setLineSpacing(0f, 1.1f) })
-    val e = et("$lo - $hi", P.getInt(key, def).toString()).apply {
-      inputType = InputType.TYPE_CLASS_NUMBER
-      layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { topMargin = dp(8) }
+    helpNotes.add(title to desc)
+    val e = EditText(this).apply {
+      setSingleLine(); inputType = InputType.TYPE_CLASS_NUMBER; setText(P.getInt(key, def).toString())
+      setTextColor(fg); textSize = 14f; gravity = Gravity.CENTER
+      background = rr(fieldC, 10, strokeC); setPadding(dp(8), dp(8), dp(8), dp(8))
+      imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+      layoutParams = LinearLayout.LayoutParams(dp(92), dp(42))
     }
-    val b = btn("Save") {
+    val commit = {
       val v = (e.text.toString().toIntOrNull() ?: def).coerceIn(lo, hi)
-      e.setText(v.toString()); P.edit().putInt(key, v).apply(); toast("Saved: $v")
-    }.apply { layoutParams = LinearLayout.LayoutParams(dp(84), dp(46)).apply { topMargin = dp(8); leftMargin = dp(8) } }
-    col.addView(row(e, b))
+      e.setText(v.toString()); P.edit().putInt(key, v).apply()
+      if (key == "mbps") Limit.load(P)
+    }
+    e.setOnFocusChangeListener { _, f -> if (!f) commit() }
+    e.setOnEditorActionListener { v, _, _ -> commit(); v.clearFocus(); false }
+    settingCommits.add(commit)
+    if (col.childCount > 1) col.addView(divider())
+    col.addView(row(settingLabel(title), e).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(12) })
   }
 
   private fun swRow(col: LinearLayout, title: String, desc: String, key: String, def: Boolean, msg: (Boolean) -> String) {
+    helpNotes.add(title to desc)
     val sw = tint(Switch(this).apply { isChecked = P.getBoolean(key, def) })
-    val tx = LinearLayout(this).apply {
-      orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(12) }
-      addView(tv(title, 15f, fg, true))
-      addView(tv(desc, 12f, sub).apply { setPadding(0, dp(2), 0, 0); setLineSpacing(0f, 1.1f) })
+    sw.setOnCheckedChangeListener { _, c ->
+      P.edit().putBoolean(key, c).apply(); if (key == "lim") Limit.load(P); toast(msg(c))
     }
-    sw.setOnCheckedChangeListener { _, c -> P.edit().putBoolean(key, c).apply(); toast(msg(c)) }
-    col.addView(row(tx, sw).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(18) })
+    if (col.childCount > 1) col.addView(divider())
+    col.addView(row(settingLabel(title), sw).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(12) })
   }
 
   private fun buildSettings(): View {
     val col = pageCol()
-    head(col, "Settings", "Tune speed, stability and behaviour")
+    head(col, "Settings", "Changes save automatically")
 
     val s1 = card(14); s1.addView(secTitle("Connection"))
-    numRow(s1, "Connection timeout (seconds)", "How long one tunnel waits to connect before it counts as failed and retries. Raise it for slow accounts.", "to", 20, 5, 300)
-    numRow(s1, "Retry max wait (seconds)", "After a failure a tunnel retries after 3s, then 6s, 12s, 24s... up to this limit. It never stops retrying. Set 3 to always retry every 3 seconds.", "rmax", 30, 3, 120)
-    swRow(s1, "Auto reconnect (active check)", "Every tunnel is health-checked. A bad one is replaced first (new tunnel up, then the old one closed) so the VPN never drops. OFF: reconnect only when a tunnel breaks by itself.", "auto", true) { if (it) "Auto reconnect ON" else "Auto reconnect OFF" }
-    numRow(s1, "Check interval (seconds)", "How often tunnels are checked. Smaller catches problems faster but uses a little more battery and data. Applies immediately.", "chk", 5, 1, 60)
+    numRow(s1, "Connection timeout (s)", "How long one tunnel waits to connect before it counts as failed and retries. Raise it for slow accounts.", "to", 20, 5, 300)
+    numRow(s1, "Retry max wait (s)", "After a failure a tunnel retries after 3s, then 6s, 12s, 24s... up to this limit. It never stops retrying. Set 3 to always retry every 3 seconds.", "rmax", 30, 3, 120)
+    swRow(s1, "Auto reconnect", "Every tunnel is health-checked. A bad one is replaced first (new tunnel up, then the old one closed) so the VPN never drops. OFF: reconnect only when a tunnel breaks by itself.", "auto", true) { if (it) "Auto reconnect ON" else "Auto reconnect OFF" }
+    numRow(s1, "Check interval (s)", "How often tunnels are checked. Smaller catches problems faster but uses a little more battery and data. Applies immediately.", "chk", 5, 1, 60)
     numRow(s1, "Failed checks before reconnect", "How many checks in a row must fail before reconnecting. Smaller reacts faster but may give false alarms. Applies immediately.", "miss", 2, 1, 10)
     col.addView(s1)
 
     val s2 = card(); s2.addView(secTitle("Performance"))
-    numRow(s2, "Max queries per second (QPS limit)", "Total DNS queries per second across all tunnels. 0 = OFF. The log prints queries sent and answers received every 5 seconds; if the answer rate drops, the resolver is blocking you. Use 1000 just to count. Applies at next START.", "qps", 0, 0, 5000)
-    numRow(s2, "DNS packet size / payload (bytes)", "How much data to ask for in one resolver reply. Bigger = more per request, but some resolvers drop big packets. Try 512 or 900 if you have trouble. Applies at next START.", "pay", 1232, 512, 4096)
+    numRow(s2, "QPS limit (0 = off)", "Total DNS queries per second across all tunnels. 0 = OFF. The log prints queries sent and answers received every 5 seconds; if the answer rate drops, the resolver is blocking you. Use 1000 just to count. Applies at next START.", "qps", 0, 0, 5000)
+    numRow(s2, "DNS payload (bytes)", "How much data to ask for in one resolver reply. Bigger = more per request, but some resolvers drop big packets. Try 512 or 900 if you have trouble. Applies at next START.", "pay", 1232, 512, 4096)
     numRow(s2, "VPN MTU", "Maximum packet size of the phone VPN. Lower it if some sites or apps hang. Applies at next START.", "mtu", 1500, 576, 1500)
-    numRow(s2, "dnstt MTU (chunk size)", "dnstt's own per-query chunk size (the -mtu flag), separate from the VPN MTU. Bigger = fewer queries for the same data and less rate limiting. 0 = use dnstt's default. Applies at next START.", "dmtu", 0, 0, 1500)
+    numRow(s2, "dnstt MTU (0 = default)", "dnstt's own per-query chunk size (the -mtu flag), separate from the VPN MTU. Bigger = fewer queries for the same data and less rate limiting. 0 = use dnstt's default. Applies at next START.", "dmtu", 0, 0, 1500)
     swRow(s2, "Low-load mode", "dnstt polls less when idle: less data and battery, but replies can be slightly slower and download speed a bit lower. Applies at next START.", "low", false) { if (it) "Low-load ON (next START)" else "Low-load OFF (next START)" }
-    s2.addView(tv("Max speed limit", 15f, fg, true).apply { layoutParams = lp(18) })
-    s2.addView(tv("Cap upload and download to 1-100 Mbps. OFF = no limit.", 12f, sub).apply { layoutParams = lp(2) })
-    val lim = tint(Switch(this)).apply { isChecked = P.getBoolean("lim", false); text = "Speed limit ON"; setTextColor(fg); layoutParams = lp(8) }
-    val sp = et("Mbps (1-100)", P.getInt("mbps", 10).toString()).apply { inputType = InputType.TYPE_CLASS_NUMBER }
-    s2.addView(lim); s2.addView(sp)
-    s2.addView(row(btn("Save speed limit") {
-      val v = (sp.text.toString().toIntOrNull() ?: 10).coerceIn(1, 100)
-      sp.setText(v.toString()); P.edit().putInt("mbps", v).putBoolean("lim", lim.isChecked).apply(); Limit.load(P)
-      toast(if (lim.isChecked) "Speed limit set: $v Mbps" else "Speed limit OFF")
-    }))
+    swRow(s2, "Speed limit", "Cap upload and download to the Mbps value below. OFF = no limit.", "lim", false) { if (it) "Speed limit ON" else "Speed limit OFF" }
+    numRow(s2, "Speed limit (Mbps)", "Maximum speed, 1-100 Mbps, used when Speed limit is ON.", "mbps", 10, 1, 100)
     col.addView(s2)
 
     val s3 = card(); s3.addView(secTitle("Resolvers and rotation"))
-    s3.addView(tv("Resolver rotation", 15f, fg, true).apply { layoutParams = lp(16) })
-    s3.addView(tv("Comma-separated public resolvers (e.g. 8.8.8.8,1.1.1.1,9.9.9.9). Each new or reconnecting tunnel takes the next one in turn, so one resolver is rate-limited less. Leave empty to use only each account's own DNS. If your network only allows one fixed resolver, list just that one. Applies at next connect.", 12f, sub).apply { layoutParams = lp(2); setLineSpacing(0f, 1.1f) })
+    helpNotes.add("Resolver rotation" to "Comma-separated public resolvers (e.g. 8.8.8.8,1.1.1.1,9.9.9.9). Each new or reconnecting tunnel takes the next one in turn, so one resolver is rate-limited less. Leave empty to use only each account's own DNS. If your network only allows one fixed resolver, list just that one. Applies at next connect.")
+    s3.addView(settingLabel("Resolver rotation").apply { layoutParams = lp(12) })
     val resE = et("8.8.8.8,1.1.1.1,9.9.9.9", P.getString("resolvers", "") ?: "")
+    resE.setOnFocusChangeListener { _, f -> if (!f) P.edit().putString("resolvers", resE.text.toString().trim()).apply() }
+    settingCommits.add { P.edit().putString("resolvers", resE.text.toString().trim()).apply() }
     s3.addView(resE)
-    s3.addView(row(btn("Save resolvers") { P.edit().putString("resolvers", resE.text.toString().trim()).apply(); toast("Saved (applies at next connect)") }))
-    numRow(s3, "Session break (seconds)", "Every N seconds a running tunnel is deliberately replaced (make-before-break, the VPN stays up) and the resolver changes if rotation is set. This keeps resolver rate-limit counters resetting. 0 = OFF. Applies immediately.", "sbreak", 0, 0, 7200)
+    numRow(s3, "Session break (s, 0 = off)", "Every N seconds a running tunnel is deliberately replaced (make-before-break, the VPN stays up) and the resolver changes if rotation is set. This keeps resolver rate-limit counters resetting. 0 = OFF. Applies immediately.", "sbreak", 0, 0, 7200)
     swRow(s3, "Account rotation", "ON: one account runs at a time and the next ON account takes over every interval, then the old one closes. Accounts rotate in the order shown. OFF: all ON accounts run together. Applies at next START.", "rot", false) { if (it) "Rotation ON (next START)" else "Rotation OFF - all accounts run together" }
-    numRow(s3, "Rotation interval (seconds)", "How long to wait before the next account takes over. Connecting itself takes 3-5 seconds, so the real gap is a little longer. Applies immediately.", "rint", 5, 1, 3600)
+    numRow(s3, "Rotation interval (s)", "How long to wait before the next account takes over. Connecting itself takes 3-5 seconds, so the real gap is a little longer. Applies immediately.", "rint", 5, 1, 3600)
     col.addView(s3)
 
     val s4 = card(); s4.addView(secTitle("Ports"))
@@ -488,17 +614,13 @@ class MainActivity : Activity() {
     numRow(s4, "Tunnel start port", "Tunnels start from this port (A1#1 = start + 1 ...). Busy ports are skipped automatically. Applies at next START.", "tport", 2000, 1024, 65000)
     col.addView(s4)
 
-    val s5 = card(); s5.addView(secTitle("Appearance"))
+    val s5 = card(); s5.addView(secTitle("Appearance and background"))
     s5.addView(row(
       btn("Dark", if (dark) acc else fieldC) { P.edit().putBoolean("dark", true).apply(); icon(true); save(); recreate() },
       btn("Light", if (!dark) acc else fieldC) { P.edit().putBoolean("dark", false).apply(); icon(false); save(); recreate() }))
-    s5.addView(tv("The launcher icon changes with the theme (it can take a few seconds to update).", 12f, sub).apply { layoutParams = lp(8) })
+    s5.addView(row(btn("Battery / notification permission", fieldC) { askBackground() }))
+    helpNotes.add("Appearance and background" to "The launcher icon changes with the theme (it can take a few seconds to update). Turn off battery optimization and allow notifications so the VPN keeps running in the background.")
     col.addView(s5)
-
-    val s6 = card(); s6.addView(secTitle("Background"))
-    s6.addView(tv("Turn off battery optimization and allow notifications so the VPN keeps running in the background.", 12f, sub).apply { layoutParams = lp(6) })
-    s6.addView(row(btn("Battery / notification permission", fieldC) { askBackground() }))
-    col.addView(s6)
     return ScrollView(this).apply { addView(col) }
   }
 
@@ -535,20 +657,21 @@ Mollad DNS sends your whole phone's internet through a DNS tunnel (dnstt) with S
 """)
     helpCard(col, "Quick start", """
 1. Open the Accounts tab and fill one account: NS domain, public key, username, password and a UDP DNS resolver (for example 8.8.8.8). Or use VPNJantit auto accounts (below).
-2. Go to Home and tap the big button. Allow the VPN permission the first time.
-3. When the ring turns green and says Connected, you are online.
+2. Go to Home and tap Connect. Allow the VPN permission the first time.
+3. When the card turns green and says Connected, you are online.
 4. Test with 1 account and 1 tunnel first, then raise the tunnel count.
 """)
     helpCard(col, "Accounts", """
+- The Accounts tab shows one row per account. Tap a row to open that account and edit all its details; the arrow at the top brings you back.
 - Parallel tunnels (1-20): one account opens that many tunnels at once. More tunnels = more speed but more load.
 - Each account has an ON/OFF switch. Only ON accounts run when you connect.
 - Need a second resolver (for example 1.1.1.1)? An account holds one UDP DNS. Tap Clone, which copies everything, and just change the DNS.
 - To edit accounts or switch them ON/OFF, stop the VPN first. Fields are locked while it runs.
 """)
     helpCard(col, "VPNJantit auto accounts", """
-- Create account: pick a server (India list). The app opens the VPNJantit form in a hidden window, fills a random username and password, waits for the Cloudflare check to pass, taps Create, then reads the NS domain, public key, username, password and expiry into a new account.
-- If the site asks for a real captcha, only that part is shown on screen. You tap it yourself. The app never tries to bypass a captcha.
-- Auto-renew (MAIN + BACKUP): keeps two accounts alive. MAIN prefers DigitalOcean servers (in6, in1); BACKUP prefers the longest validity (in10). A new account is made about 4 hours before the old one expires and replaces it. If the VPN is running it restarts once to load the new account.
+- Create account: pick a server (India list). The app works in the background with no window on screen, fills a random username and password, waits for the Cloudflare check to pass, taps Create, then reads the NS domain, public key, username, password and expiry into a new account.
+- If the site asks for a real captcha, only then a window opens and you tap it yourself. The app never tries to bypass a captcha.
+- Auto-renew keeps your MAIN account alive. Turn on "Also keep a BACKUP account" if you want a second one. An account made earlier is reused, so no duplicate is created. MAIN prefers DigitalOcean servers (in6, in1); BACKUP prefers the longest validity (in10). A new account is made about 4 hours before the old one expires and replaces it. If the VPN is running it restarts once to load the new account.
 - Server Full: the app marks that server full until the daily reset (21:00 GMT+7, about 7:30 PM IST) and tries the next one.
 - The site only allows one account every 5 minutes, so the app waits 6-7 minutes between accounts. Keep the app open during that wait.
 - When the app is closed you get a notification before expiry. Tap it and everything continues.
@@ -556,20 +679,15 @@ Mollad DNS sends your whole phone's internet through a DNS tunnel (dnstt) with S
 - Do not use an ad-block DNS (like AdGuard) while creating accounts. The site blocks the form when it detects one.
 """)
     helpCard(col, "Home screen", """
-The big button connects or disconnects. Below it you see upload and download speed (Mbps) with totals, how many tunnels are connected (for example 3 / 5), and how long the VPN has been up. The Active accounts card lists your ON accounts and the time left on VPNJantit accounts.
+The Connect button at the bottom connects or disconnects. In the card you see upload and download speed (Mbps) with totals. Below it: how many tunnels are connected (for example 3 / 5), and how long the VPN has been up. The Active accounts card lists your ON accounts and the time left on VPNJantit accounts.
 """)
-    helpCard(col, "Settings guide", """
-- Connection timeout: how long one tunnel waits to connect.
-- Retry max wait: the retry delay grows from 3s up to this limit and never stops.
-- Auto reconnect and check interval: bad tunnels are replaced before the old one is closed, so the VPN does not drop.
-- QPS limit: caps total DNS queries per second. The log shows queries per second and the answer percentage, which tells you when a resolver starts blocking.
-- Low-load mode: slower polling, less battery, slightly lower speed.
-- Max speed: limit upload and download to 1-100 Mbps.
-- Resolver rotation and session break: spread queries over several resolvers and reset rate-limit counters.
-- Account rotation: one account at a time, switching every interval.
-- DNS payload, VPN MTU, dnstt MTU: tuning for networks that drop big packets. Try 512 or 900 for payload and a lower MTU if sites hang.
-- SOCKS port and tunnel start port: change them if another app is using the same ports.
-""")
+    col.addView(card(12).apply {
+      addView(secTitle("Settings guide"))
+      helpNotes.forEach { (t, d) ->
+        addView(tv(t, 14f, fg, true).apply { layoutParams = lp(12) })
+        addView(tv(d, 12.5f, sub).apply { layoutParams = lp(2); setLineSpacing(0f, 1.15f) })
+      }
+    })
     helpCard(col, "Troubleshooting", """
 - Open the Logs tab first. Each line starts with the tunnel name, for example A1#2 = account 1, tunnel 2.
 - AUTH FAIL: wrong username or password, or the account expired.
@@ -582,28 +700,38 @@ The big button connects or disconnects. Below it you see upload and download spe
   }
 
   // ---------- Navigation ----------
+  private lateinit var navItems: List<LinearLayout>
+
   private fun buildNav(): View {
     val names = listOf("Home", "Accounts", "Logs", "Settings", "Help")
     navIcons = names.indices.map { NavIcon(this, it) }
     navLabels = names.map { n -> tv(n, 11f, sub).apply { gravity = Gravity.CENTER } }
-    val bar = LinearLayout(this).apply { setBackgroundColor(cardC); elevation = dp(8).toFloat() }
-    names.indices.forEach { i ->
-      bar.addView(LinearLayout(this).apply {
+    val bar = LinearLayout(this).apply {
+      background = rr(cardC, 32, strokeC); elevation = dp(8).toFloat()
+      layoutParams = LinearLayout.LayoutParams(-1, dp(64)).apply { setMargins(dp(14), dp(4), dp(14), dp(12)) }
+      setPadding(dp(6), dp(6), dp(6), dp(6))
+    }
+    navItems = names.indices.map { i ->
+      LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
-        layoutParams = LinearLayout.LayoutParams(0, dp(60), 1f)
-        addView(navIcons[i], LinearLayout.LayoutParams(dp(24), dp(24)).apply { bottomMargin = dp(3) })
+        layoutParams = LinearLayout.LayoutParams(0, -1, 1f).apply { setMargins(dp(2), 0, dp(2), 0) }
+        addView(navIcons[i], LinearLayout.LayoutParams(dp(22), dp(22)).apply { bottomMargin = dp(2) })
         addView(navLabels[i])
         setOnClickListener { show(i) }
-      })
+      }
     }
+    navItems.forEach { bar.addView(it) }
     return bar
   }
 
   private fun show(i: Int) {
+    settingCommits.forEach { it() }
     cur = i
+    if (i != 1) closeDetail()
     pages.forEachIndexed { k, p -> p.visibility = if (k == i) View.VISIBLE else View.GONE }
     navIcons.forEachIndexed { k, v -> v.color = if (k == i) acc else sub; v.invalidate() }
     navLabels.forEachIndexed { k, t -> t.setTextColor(if (k == i) acc else sub) }
+    navItems.forEachIndexed { k, v -> v.background = if (k == i) rr(tintBg(acc, 0x22), 24) else null }
     refresh()
   }
 
@@ -661,9 +789,9 @@ The big button connects or disconnects. Below it you see upload and download spe
     }
     setHero(state)
     heroBtn.isEnabled = pending == null
-    statusTv.text = when (state) { 2 -> "Connected"; 1 -> "Connecting..."; 3 -> "Disconnecting..."; else -> "Disconnected" }
-    statusTv.setTextColor(when (state) { 2 -> acc; 1, 3 -> amber; else -> fg })
-    hintTv.text = if (r) "Stop the VPN to edit accounts or switch them ON/OFF" else ""
+    statePill.text = when (state) { 2 -> "Connected"; 1 -> "Connecting..."; 3 -> "Disconnecting..."; else -> "Disconnected" }
+    statusTv.text = when (state) { 2 -> "You are online"; 1 -> "Getting tunnels ready"; 3 -> "Closing tunnels"; else -> "Ready when you are" }
+    hintTv.text = if (vjBusy) "Creating the VPNJantit account in the background..." else if (r) "Stop the VPN to edit accounts or switch them ON/OFF" else ""
 
     val now = System.currentTimeMillis(); val u = Stats.up.get(); val d = Stats.down.get()
     if (now - lastT >= 800) {
@@ -683,7 +811,7 @@ The big button connects or disconnects. Below it you see upload and download spe
       subTv.text = if (state == 2) "Online for $t" else "Opening tunnels..."
     } else {
       tmBig.text = "--"; tmSm.text = "offline"
-      subTv.text = if (state == 3) "Closing tunnels..." else if (state == 1) "Starting..." else "Tap the button to connect"
+      subTv.text = if (state == 3) "Closing tunnels..." else if (state == 1) "Starting..." else "Tap Connect to start"
     }
 
     val sb = StringBuilder()
@@ -719,8 +847,8 @@ The big button connects or disconnects. Below it you see upload and download spe
       }
     } catch (e: Throwable) {}
     P = getSharedPreferences("a", 0)
-    dark = P.getBoolean("dark", true)
-    window.statusBarColor = bg; window.navigationBarColor = cardC
+    dark = P.getBoolean("dark", false)
+    window.statusBarColor = bg; window.navigationBarColor = bg
     if (!dark) window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
     val hv = buildHome(); val av = buildAccounts(); val lv = buildLogs(); val sv = buildSettings(); val iv = buildHelp()
     pages = listOf(hv, av, lv, sv, iv)
@@ -730,14 +858,14 @@ The big button connects or disconnects. Below it you see upload and download spe
     askBackground()
   }
 
-  override fun onPause() { super.onPause(); save(); h.removeCallbacksAndMessages(null) }
+  override fun onPause() { super.onPause(); settingCommits.forEach { it() }; save(); h.removeCallbacksAndMessages(null) }
   override fun onResume() { super.onResume(); refresh(); if (P.getBoolean("vj_auto", false)) vjCheck(false) }
   override fun onNewIntent(i: Intent?) {
     super.onNewIntent(i); setIntent(i)
     if (i?.getBooleanExtra("vj_auto", false) == true) { vjHold = 0L; vjCheck(true) }
   }
   override fun onDestroy() {
-    super.onDestroy(); h.removeCallbacksAndMessages(null); vh.removeCallbacksAndMessages(null); pulse?.cancel()
+    super.onDestroy(); h.removeCallbacksAndMessages(null); vh.removeCallbacksAndMessages(null)
   }
 
   private fun begin() { startForegroundService(Intent(this, VpnSvc::class.java)) }
@@ -772,7 +900,19 @@ The big button connects or disconnects. Below it you see upload and download spe
   private fun isFull(code: String) = P.getLong("vjfull_$code", 0L) > System.currentTimeMillis()
   private fun roleAcc(role: String) = accs.firstOrNull { it.role == role }
   private fun needsRenew(a: Acc?) = a == null || (a.exp > 0 && a.exp - System.currentTimeMillis() <= VpnJantit.RENEW_BEFORE_MS)
-  private fun vjNeeded(): String? = listOf("main", "backup").firstOrNull { needsRenew(roleAcc(it)) }
+  private fun vjRoles() = if (P.getBoolean("vj_backup", false)) listOf("main", "backup") else listOf("main")
+
+  /** An account the app created earlier (no role yet) becomes MAIN/BACKUP, so no duplicate is made. */
+  private fun adoptRoles() {
+    val now = System.currentTimeMillis()
+    for (role in vjRoles()) {
+      if (roleAcc(role) != null) continue
+      val cand = accs.firstOrNull { it.role.isBlank() && it.srv.isNotBlank() && it.exp > now } ?: continue
+      cand.role = role
+    }
+  }
+
+  private fun vjNeeded(): String? { adoptRoles(); return vjRoles().firstOrNull { needsRenew(roleAcc(it)) } }
 
   private fun vjCheck(manual: Boolean) {
     if (vjBusy || vjWaiting) { if (manual) toast("VPNJantit is already working on it"); return }

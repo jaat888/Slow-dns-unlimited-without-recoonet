@@ -13,7 +13,7 @@
     <activity-alias android:name=".LightAlias" android:targetActivity=".MainActivity" android:exported="true" android:enabled="false" android:label="Mollad DNS" android:icon="@mipmap/ic_light">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity-alias>
-    <activity android:name=".VpnJantitActivity" android:process=":vj" android:exported="false" android:label="VPNJantit" android:configChanges="orientation|screenSize|keyboardHidden"/>
+    <activity android:name=".VpnJantitActivity" android:process=":vj" android:exported="false" android:label="VPNJantit" android:theme="@android:style/Theme.Translucent.NoTitleBar" android:configChanges="orientation|screenSize|keyboardHidden"/>
     <receiver android:name=".VjReceiver" android:exported="false"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter></receiver>
     <service android:name=".VpnSvc" android:exported="false" android:permission="android.permission.BIND_VPN_SERVICE">
       <intent-filter><action android:name="android.net.VpnService"/></intent-filter>

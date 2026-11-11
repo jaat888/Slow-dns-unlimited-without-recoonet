@@ -10,7 +10,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.ViewOutlineProvider
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
@@ -42,6 +44,8 @@ class VpnJantitActivity : Activity() {
     private lateinit var web: WebView
     private lateinit var holder: FrameLayout
     private lateinit var status: TextView
+    private lateinit var root: FrameLayout
+    private lateinit var card: LinearLayout
     private val ui = Handler(Looper.getMainLooper())
 
     private var server = "in6"
@@ -55,6 +59,8 @@ class VpnJantitActivity : Activity() {
     private var revealed = false
     private var done = false
     private var busy = false
+    private var gateOpen = false
+    private var userHiddenUntil = 0L
 
     private val poll = object : Runnable {
         override fun run() {
@@ -83,6 +89,9 @@ class VpnJantitActivity : Activity() {
             return
         }
         server = intent.getStringExtra(VpnJantit.EXTRA_SERVER)?.takeIf { it.isNotBlank() } ?: "in6"
+        // Background mode: no visible window and touches pass through, until a captcha needs the user
+        window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
+        overridePendingTransition(0, 0)
         user = randomName()
         pass = randomPass()
         startedAt = SystemClock.elapsedRealtime()
@@ -104,8 +113,8 @@ class VpnJantitActivity : Activity() {
     }
 
     private fun buildUi() {
-        val root = FrameLayout(this)
-        root.setBackgroundColor(0xE60A0E14.toInt())
+        root = FrameLayout(this)
+        root.setBackgroundColor(0)
 
         // The WebView sits in its own rounded box: it is hidden (alpha 0) and only shown when a captcha appears.
         holder = FrameLayout(this)
@@ -115,11 +124,12 @@ class VpnJantitActivity : Activity() {
         holder.alpha = 0f
         web = WebView(this)
         holder.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        val hp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300), Gravity.BOTTOM)
-        hp.setMargins(dp(16), 0, dp(16), dp(90))
+        val hp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(420), Gravity.BOTTOM)
+        hp.setMargins(dp(16), 0, dp(16), dp(24))
         root.addView(holder, hp)
 
-        val card = LinearLayout(this)
+        card = LinearLayout(this)
+        card.visibility = View.GONE
         card.orientation = LinearLayout.VERTICAL
         card.background = rr(0xFF121821.toInt(), 20, 0xFF222C3A.toInt())
         card.setPadding(dp(18), dp(16), dp(18), dp(16))
@@ -148,6 +158,15 @@ class VpnJantitActivity : Activity() {
         status.text = "Creating your VPNJantit account..."
         card.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(14) })
 
+        val hideB = Button(this)
+        hideB.text = "Continue in background"
+        hideB.isAllCaps = false
+        hideB.stateListAnimator = null
+        hideB.setTextColor(Color.WHITE)
+        hideB.background = rr(0xFF2563EB.toInt(), 12)
+        hideB.setOnClickListener { hideByUser() }
+        card.addView(hideB, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(14) })
+
         val cancel = Button(this)
         cancel.text = "Cancel"
         cancel.isAllCaps = false
@@ -155,7 +174,7 @@ class VpnJantitActivity : Activity() {
         cancel.setTextColor(Color.WHITE)
         cancel.background = rr(0xFF1B2330.toInt(), 12)
         cancel.setOnClickListener { finishCancelled() }
-        card.addView(cancel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(14) })
+        card.addView(cancel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
 
         val cp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP)
         cp.setMargins(dp(16), dp(56), dp(16), 0)
@@ -186,6 +205,16 @@ class VpnJantitActivity : Activity() {
                 return !(host == "vpnjantit.com" || host.endsWith(".vpnjantit.com"))
             }
 
+            // Videos (ads) are not downloaded: saves data and removes the sound. Scripts and images stay untouched,
+            // because the site refuses to work when it thinks an ad-blocker is running.
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): android.webkit.WebResourceResponse? {
+                val u = request.url.toString().substringBefore('?').lowercase()
+                if (u.endsWith(".mp4") || u.endsWith(".webm") || u.endsWith(".m3u8") || u.endsWith(".mpd") || u.endsWith(".mov")) {
+                    return android.webkit.WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                }
+                return null
+            }
+
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 finishFail("The WebView was closed (low memory). Please try again.", 0L)
                 return true // the app will not crash
@@ -201,6 +230,9 @@ class VpnJantitActivity : Activity() {
             finishFail("Timed out: the account was not created", 0L)
             return
         }
+        run(MUTE_JS) { }
+        run(DISMISS_JS) { }
+        if (revealed && !gateOpen) run(RECENTER_JS) { }
         if (busy) return
         busy = true
         web.evaluateJavascript(JS_PROBE) { raw ->
@@ -233,6 +265,8 @@ class VpnJantitActivity : Activity() {
             finishFail(err, if (cooldown) VpnJantit.COOLDOWN_MS else 0L)
             return
         }
+        if (o.optBoolean("gate")) { revealGate(); return }
+        if (gateOpen) { gateOpen = false; hide() }
         if (!hasInputs) return
 
         if (filledAt == 0L) {
@@ -301,20 +335,46 @@ class VpnJantitActivity : Activity() {
 
     private fun setStatus(t: String) { status.text = t }
 
-    private fun reveal() {
-        if (revealed) return
+    private fun showUi(msg: String) {
         revealed = true
+        root.setBackgroundColor(0xE60A0E14.toInt()); card.visibility = View.VISIBLE
+        window.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
         holder.alpha = 1f
-        setStatus("Captcha required: tap the box below")
-        run(REVEAL_JS) { }
-        // The captcha widget may load later, so scroll twice
-        ui.postDelayed({ if (!done && revealed) run(REVEAL_JS) { } }, 1500)
+        setStatus(msg)
+    }
+
+    /** Only the captcha is shown: cookie banner, ads and the rest of the page are hidden. */
+    private fun reveal() {
+        if (revealed || SystemClock.elapsedRealtime() < userHiddenUntil) return
+        showUi("Tap \"I am human\" below")
+        run(CROP_JS) { }
+        // The captcha widget may load later, so crop twice
+        ui.postDelayed({ if (!done && revealed && !gateOpen) run(CROP_JS) { } }, 1500)
+    }
+
+    /** The site asks for a short ad before it continues: show the full page so the user can do it. */
+    private fun revealGate() {
+        if (revealed || SystemClock.elapsedRealtime() < userHiddenUntil) return
+        gateOpen = true
+        run(UNCROP_JS) { }
+        showUi("The site asks you to view a short ad. Finish it and this continues by itself.")
     }
 
     private fun hide() {
         if (!revealed) return
         revealed = false
+        run(UNCROP_JS) { }
+        root.setBackgroundColor(0); card.visibility = View.GONE
+        window.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
         holder.alpha = 0f
+    }
+
+    /** Back / "Continue in background": the window closes but the account keeps being created. */
+    private fun hideByUser() {
+        userHiddenUntil = SystemClock.elapsedRealtime() + 60_000L
+        gateOpen = false
+        hide()
+        android.widget.Toast.makeText(this, "Continuing in the background", android.widget.Toast.LENGTH_SHORT).show()
     }
 
     private fun run(js: String, cb: (String?) -> Unit) {
@@ -338,7 +398,7 @@ class VpnJantitActivity : Activity() {
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        finishCancelled()
+        if (revealed) hideByUser() else finishCancelled()
     }
 
     override fun onDestroy() {
@@ -404,6 +464,72 @@ class VpnJantitActivity : Activity() {
 })()
 """
 
+        /** Hides everything except the captcha widgets (cookie banner, ads, pop-ups). */
+        private const val CROP_JS = """
+(function(){
+  var st=document.getElementById('vj-crop');
+  if(!st){ st=document.createElement('style'); st.id='vj-crop'; document.head.appendChild(st); }
+  st.textContent='html,body{background:#fff !important;overflow:auto !important}'+
+    'body *{visibility:hidden !important}'+
+    '.h-captcha,.h-captcha *,.cf-turnstile,.cf-turnstile *,iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"]{visibility:visible !important}'+
+    '.h-captcha,.cf-turnstile{position:fixed !important;top:12px !important;left:50% !important;transform:translateX(-50%) !important;z-index:2147483647 !important;background:#fff !important}';
+  var e=document.querySelector('iframe[src*="hcaptcha.com"],.h-captcha,.cf-turnstile,iframe[src*="challenges.cloudflare.com"]');
+  if(e){ e.scrollIntoView({block:'center'}); }
+  return 'ok';
+})()
+"""
+
+        /** If the captcha moved completely out of view (page grew or shrank), bring it back to the middle. */
+        private const val RECENTER_JS = """
+(function(){
+  var e=document.querySelector('iframe[src*="hcaptcha.com"],.h-captcha,.cf-turnstile,iframe[src*="challenges.cloudflare.com"]');
+  if(!e) return 'none';
+  var r=e.getBoundingClientRect();
+  if(r.height>0 && (r.bottom<0 || r.top>window.innerHeight)) e.scrollIntoView({block:'center'});
+  return 'ok';
+})()
+"""
+
+        private const val UNCROP_JS = """
+(function(){ var s=document.getElementById('vj-crop'); if(s&&s.parentNode) s.parentNode.removeChild(s); return 'ok'; })()
+"""
+
+        /** Accepts the cookie banner and closes ad pop-ups. It never presses "view ad" buttons. */
+        private const val DISMISS_JS = """
+(function(){
+  function vis(e){ var r=e.getBoundingClientRect(); var s=getComputedStyle(e);
+    return r.width>0 && r.height>0 && s.visibility!=='hidden' && s.display!=='none'; }
+  var n=0;
+  var all=[].slice.call(document.querySelectorAll('button,a,div,span,input[type=button]'));
+  for(var i=0;i<all.length;i++){
+    var e=all[i];
+    if(e.getAttribute('data-vjc')) continue;
+    if(e.closest && e.closest('form,.h-captcha,.cf-turnstile')) continue;
+    if(!vis(e)) continue;
+    var t=((e.innerText||e.value||'')+'').replace(/\s+/g,' ').trim();
+    var lab=((e.getAttribute('aria-label')||'')+'').toLowerCase().trim();
+    var ok=false;
+    if(t.length<20 && e.children.length<=1 && /^(i agree|agree|accept|accept all|accept cookies|allow all|got it|i understand|ok|okay)$/i.test(t)) ok=true;
+    else if(lab==='close' || lab==='dismiss' || lab==='close ad') ok=true;
+    else if(e.children.length===0 && /^(\u00d7|\u2715|\u2716|x)$/i.test(t)) ok=true;
+    if(ok){ e.setAttribute('data-vjc','1'); try{ e.click(); n++; }catch(x){} }
+  }
+  return n;
+})()
+"""
+
+        /** Keeps any video or audio on the page silent. */
+        private const val MUTE_JS = """
+(function(){
+  try{
+    if(!window.__vjm){ window.__vjm=1; var p=HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play=function(){ this.muted=true; this.volume=0; return p.apply(this,arguments); }; }
+    [].forEach.call(document.querySelectorAll('video,audio'),function(m){ m.muted=true; m.volume=0; });
+  }catch(e){}
+  return 'ok';
+})()
+"""
+
         /** Reads the page and reports: result / adblock / form + captcha state. */
         private const val JS_PROBE = """
 (function(){
@@ -462,6 +588,7 @@ class VpnJantitActivity : Activity() {
     if(L.length>3 && L.length<200 && /(server (is )?full|please wait|try again|too many|already (exist|taken|used)|not available|failed|limit reached|wait \d+ minute)/i.test(L)){ err=L; break; }
   }
   o.err=err;
+  o.gate=/view a short ad/i.test(body);
   return o;
 })()
 """
