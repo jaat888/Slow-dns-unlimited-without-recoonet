@@ -101,11 +101,26 @@ object VjSite {
         }.start()
     }
 
+    /** Both spellings (with and without www) are asked at the same time; the first good page wins. */
     private fun httpGet(url: String, marker: String): String? {
         val alt = if (url.contains("://www.")) url.replace("://www.", "://") else url.replace("://", "://www.")
+        val q = java.util.concurrent.LinkedBlockingQueue<String>()
+        val left = java.util.concurrent.atomic.AtomicInteger(2)
         for (u in listOf(url, alt)) {
-            val r = httpGetOne(u, marker)
-            if (r != null) return r
+            Thread {
+                val r = httpGetOne(u, marker)
+                q.offer(r ?: "")
+                left.decrementAndGet()
+            }.start()
+        }
+        val end = System.currentTimeMillis() + 14_000L
+        var got = 0
+        while (got < 2) {
+            val left0 = end - System.currentTimeMillis()
+            if (left0 <= 0) break
+            val r = q.poll(left0, java.util.concurrent.TimeUnit.MILLISECONDS) ?: break
+            got++
+            if (r.isNotEmpty()) return r
         }
         return null
     }
@@ -113,8 +128,10 @@ object VjSite {
     private fun httpGetOne(url: String, marker: String): String? {
         return try {
             val c = URL(url).openConnection() as HttpURLConnection
-            c.connectTimeout = 10_000; c.readTimeout = 12_000; c.instanceFollowRedirects = true
+            c.connectTimeout = 6_000; c.readTimeout = 9_000; c.instanceFollowRedirects = true
             c.setRequestProperty("User-Agent", UA)
+            // After the hidden browser passed the Cloudflare check once, its cookie lets the next plain request through
+            try { CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() }?.let { c.setRequestProperty("Cookie", it) } } catch (e: Throwable) { }
             c.setRequestProperty("Accept", "text/html,application/xhtml+xml")
             c.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
             if (c.responseCode != 200) { lastErr = "HTTP ${c.responseCode}"; LogBus.dbg("VPNJantit site: HTTP ${c.responseCode} for $url"); c.disconnect(); return null }
@@ -147,6 +164,16 @@ object VjSite {
             w.settings.userAgentString = UA
             try { CookieManager.getInstance().setAcceptCookie(true); CookieManager.getInstance().setAcceptThirdPartyCookies(w, true) } catch (e: Throwable) { }
             w.webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(v: WebView, r: WebResourceRequest): WebResourceResponse? {
+                    val u = r.url.toString().substringBefore('?').lowercase()
+                    val host = (r.url.host ?: "").lowercase()
+                    val cf = host.endsWith("cloudflare.com") || host.endsWith("vpnjantit.com")
+                    val accept = (r.requestHeaders?.get("Accept") ?: "").lowercase()
+                    val heavy = u.endsWith(".mp4") || u.endsWith(".webm") || u.endsWith(".woff") || u.endsWith(".woff2") || u.endsWith(".ttf") ||
+                        (accept.contains("image/") && !accept.contains("text/html") && !cf) ||
+                        (!r.isForMainFrame && !cf && accept.contains("text/html"))
+                    return if (heavy) WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0))) else null
+                }
                 override fun onReceivedError(v: WebView, r: WebResourceRequest, e: WebResourceError) {
                     if (r.isForMainFrame) { lastErr = "WebView: ${e.description}"; LogBus.dbg("VPNJantit site: $lastErr") }
                 }
@@ -164,16 +191,16 @@ object VjSite {
             override fun run() {
                 if (finished) return
                 if (a.isFinishing) { done(null); return }
-                if (System.currentTimeMillis() - t0 > 40_000L) { if (lastErr.isBlank()) lastErr = "timeout (Cloudflare check did not finish)"; done(null); return }
+                if (System.currentTimeMillis() - t0 > 30_000L) { if (lastErr.isBlank()) lastErr = "timeout (Cloudflare check did not finish)"; done(null); return }
                 try {
                     w.evaluateJavascript("document.documentElement.outerHTML") { raw ->
                         val s = try { JSONTokener(raw ?: "").nextValue() as? String } catch (e: Throwable) { null }
-                        if (s != null && s.contains(marker, true)) done(s) else ui.postDelayed(this, 1000L)
+                        if (s != null && s.contains(marker, true)) done(s) else ui.postDelayed(this, 600L)
                     }
                 } catch (e: Throwable) { done(null) }
             }
         }
-        ui.postDelayed(poll, 1500L)
+        ui.postDelayed(poll, 800L)
     }
 
     // ───────────── reading the pages ─────────────

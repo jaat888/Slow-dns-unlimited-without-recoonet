@@ -28,6 +28,24 @@ object Notif {
         return android.graphics.drawable.Icon.createWithResource(c, if (dark) R.drawable.logo_dark else R.drawable.logo_light)
     }
 
+    /**
+     * MIUI replaces the small icon with the app's launcher icon (and remembers the old one). Marking the
+     * notification's icon as "customized" makes MIUI show ic_stat instead. Other phones ignore this.
+     */
+    fun own(n: Notification): Notification {
+        try {
+            val f = n.javaClass.getDeclaredField("extraNotification")
+            f.isAccessible = true
+            val ex = f.get(n)
+            if (ex != null) {
+                val m = ex.javaClass.getDeclaredMethod("setCustomizedIcon", java.lang.Boolean.TYPE)
+                m.isAccessible = true
+                m.invoke(ex, true)
+            }
+        } catch (e: Throwable) { }
+        return n
+    }
+
     /** Tapping the notification opens the app. */
     fun open(c: Context): PendingIntent {
         val i = Intent(c, MainActivity::class.java)
@@ -49,7 +67,7 @@ object Notif {
                 .setContentIntent(open(c))
                 .setAutoCancel(true)
             if (timeoutMs > 0L) b.setTimeoutAfter(timeoutMs)
-            val n = b.build()
+            val n = own(b.build())
             c.getSystemService(NotificationManager::class.java)?.notify(id, n)
         } catch (e: Throwable) { }
     }

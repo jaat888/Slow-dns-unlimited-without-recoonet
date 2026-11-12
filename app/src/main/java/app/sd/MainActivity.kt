@@ -2088,7 +2088,10 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     val green = 0xFF10B981.toInt()
 
     fun load() {
-      st.text = "Reading the site..."; list.removeAllViews()
+      st.text = "Reading the site... (saved servers shown meanwhile)"; list.removeAllViews()
+      val quick = VjSite.savedServers(P, c.slug)
+      if (quick.isNotEmpty()) for (s in quick) list.addView(listRow(s.title, (if (s.location.isNotBlank()) s.location + " \u00b7 " else "") + "saved, status not live", null) { dlg.dismiss(); startCreate(s.code, s.title) })
+      else if (c.slug == "india") for (s in VpnJantit.SERVERS) list.addView(listRow(s.label, "Saved list, status not live", null) { dlg.dismiss(); startCreate(s.code, s.label) })
       VjSite.fetch(this, VjSite.countryUrl(c.slug), "create-free-account") { html ->
         if (!dlg.isShowing) return@fetch
         val l = html?.let { VjSite.parseServers(it) }.orEmpty()

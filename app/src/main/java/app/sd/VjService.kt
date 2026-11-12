@@ -316,7 +316,16 @@ class VjService : Service() {
         val barBottom = sysBar("navigation_bar_height")
         val sheetW = minOf(dm.widthPixels - dp(32), dp(420))
         val freeH = dm.heightPixels - barTop - barBottom - dp(48)
-        val holderH = (freeH * 0.50f).toInt().coerceIn(dp(230), dp(440))
+        val holderH = (freeH * 0.58f).toInt().coerceIn(dp(260), dp(520))
+        // The page is laid out on a bigger "virtual screen" and drawn smaller, so the whole captcha (its instruction line on top,
+        // the pictures, the buttons below) fits in the box. Touches still land on the right spot.
+        val layoutW = maxOf(sheetW, dp(430))
+        val layoutH = maxOf(holderH, dp(600))
+        val fit = minOf(sheetW.toFloat() / layoutW, holderH.toFloat() / layoutH)
+        holder.removeView(web)
+        holder.addView(web, FrameLayout.LayoutParams(layoutW, layoutH))
+        web.pivotX = 0f; web.pivotY = 0f
+        web.scaleX = fit; web.scaleY = fit
         val col = LinearLayout(ctx)
         col.orientation = LinearLayout.VERTICAL
         col.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -693,7 +702,7 @@ class VjService : Service() {
             .setOngoing(true)
             .setContentIntent(Notif.open(this))
             .addAction(act)
-            .build()
+            .let { Notif.own(it.build()) }
     }
 
     // ───────────────────────── cookies ─────────────────────────

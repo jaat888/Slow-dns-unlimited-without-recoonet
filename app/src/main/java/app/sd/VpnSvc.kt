@@ -70,7 +70,7 @@ class VpnSvc : VpnService() {
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     val act = Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "Disconnect", stopPi).build()
     return Notification.Builder(this, Notif.CH_VPN).setContentTitle("Mollad DNS").setContentText(t)
-      .setSmallIcon(R.drawable.ic_stat).setLargeIcon(Notif.logo(this)).setOngoing(true).setContentIntent(Notif.open(this)).addAction(act).build()
+      .setSmallIcon(R.drawable.ic_stat).setLargeIcon(Notif.logo(this)).setOngoing(true).setContentIntent(Notif.open(this)).addAction(act).build().let { Notif.own(it) }
   }
 
   // The DNS server the tunnel forwards phone DNS queries to (setting "fdns", default 1.1.1.1)
