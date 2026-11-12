@@ -17,6 +17,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.net.VpnService
@@ -28,6 +29,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
@@ -93,6 +95,9 @@ internal class PowerIcon(ctx: Context) : View(ctx) {
 }
 
 class MainActivity : Activity() {
+  companion object { @Volatile var inst: MainActivity? = null }
+  private var resumed = false
+  private var pulse: ObjectAnimator? = null
   private val h = Handler(Looper.getMainLooper())
   private lateinit var P: SharedPreferences
   private var dark = false
@@ -139,7 +144,14 @@ class MainActivity : Activity() {
   private var pending: Boolean? = null
   private var pendingT = 0L
   private var lastTap = 0L
-  private lateinit var addB: Button
+  private lateinit var addB: View
+  private lateinit var vjStateTv: TextView
+  private lateinit var logSub: TextView
+  private lateinit var fdnsVal: TextView
+  private lateinit var appfVal: TextView
+  private lateinit var notifVal: TextView
+  private lateinit var overlayVal: TextView
+  private lateinit var battVal: TextView
   private lateinit var logTv: TextView
   private lateinit var logSv: ScrollView
   private lateinit var pages: List<View>
@@ -177,6 +189,46 @@ class MainActivity : Activity() {
     background = rr(bgc, 16); stateListAnimator = null; minHeight = 0; minimumHeight = 0
     setPadding(dp(12), 0, dp(12), 0); setOnClickListener { f() }
     layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f).apply { setMargins(dp(3), dp(8), dp(3), 0) }
+    pressable(this)
+  }
+
+  /** Light press feedback: the view shrinks a little while it is touched. */
+  private fun pressable(v: View): View {
+    v.setOnTouchListener { x, e ->
+      when (e.actionMasked) {
+        MotionEvent.ACTION_DOWN -> x.animate().scaleX(0.97f).scaleY(0.97f).setDuration(90).start()
+        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> x.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+      }
+      false
+    }
+    return v
+  }
+
+  /** Small action button (used in the compact VPNJantit card). */
+  private fun mini(t: String, filled: Boolean, f: () -> Unit) = TextView(this).apply {
+    text = t; textSize = 13f; gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD)
+    setTextColor(if (filled) ink else acc)
+    background = rr(if (filled) acc else tintBg(acc, 0x1A), 12)
+    setPadding(dp(6), 0, dp(6), 0)
+    layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { setMargins(dp(3), 0, dp(3), 0) }
+    setOnClickListener { f() }
+    pressable(this)
+  }
+
+  /** Fade + slide in a list of views one after another (light page animation). */
+  private fun staggerIn(list: List<View>) {
+    list.forEachIndexed { i, v ->
+      v.alpha = 0f; v.translationY = dp(14).toFloat()
+      v.animate().alpha(1f).translationY(0f).setStartDelay(i * 40L).setDuration(230).start()
+    }
+  }
+
+  private fun colOf(v: View): LinearLayout? {
+    var x: View? = v
+    if (x is LinearLayout && x.childCount > 0 && x.getChildAt(0) is ScrollView) x = x.getChildAt(0)
+    if (x is ScrollView) x = x.getChildAt(0)
+    if (x is FrameLayout && x.childCount > 0) { val f0 = x.getChildAt(0); x = if (f0 is ScrollView) f0.getChildAt(0) else f0 }
+    return x as? LinearLayout
   }
 
   private fun btn(t: String, c: Int = acc, f: () -> Unit) =
@@ -248,6 +300,7 @@ class MainActivity : Activity() {
     background = rr(fieldC, 16)
     layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(4), 0, dp(4), 0) }
     setOnClickListener { f() }
+    pressable(this)
   }
 
   private fun buildHome(): View {
@@ -324,6 +377,16 @@ class MainActivity : Activity() {
     heroCard.elevation = dp(6).toFloat()
     heroBtn.background = rr(if (state == 2) red else acc, 29)
     connectLbl.text = when (state) { 2 -> "Disconnect"; 1 -> "Connecting..."; 3 -> "Disconnecting..."; else -> "Connect" }
+    // light animation: the card fades to the new colour, the button breathes while it is busy
+    heroCard.alpha = 0.55f; heroCard.animate().alpha(1f).setDuration(320).start()
+    pulse?.cancel(); pulse = null
+    heroBtn.scaleX = 1f; heroBtn.scaleY = 1f
+    if (state == 1 || state == 3) {
+      pulse = ObjectAnimator.ofPropertyValuesHolder(heroBtn,
+        PropertyValuesHolder.ofFloat("scaleX", 1f, 1.025f), PropertyValuesHolder.ofFloat("scaleY", 1f, 1.025f)).apply {
+        duration = 650; repeatMode = ValueAnimator.REVERSE; repeatCount = ValueAnimator.INFINITE; start()
+      }
+    }
   }
 
   // ---------- Accounts ----------
@@ -403,6 +466,7 @@ class MainActivity : Activity() {
       addView(sS)
       addView(tv("›", 24f, sub, true).apply { setPadding(dp(10), 0, 0, 0) })
       setOnClickListener { openDetail(self) }
+      pressable(this)
     }
     self.sumT = sT; self.sumI = sI; self.sumS = sS; self.sumV = sV
     self.role = a?.optString("role") ?: ""; self.srv = a?.optString("srv") ?: ""; self.exp = a?.optLong("exp", 0L) ?: 0L
@@ -432,8 +496,9 @@ class MainActivity : Activity() {
       a.sumT.text = a.title.text
       a.sumI.text = if (parts.isEmpty()) a.ns.text.toString().ifBlank { "Not set up yet" } else parts.joinToString("  ·  ")
       a.sumI.setTextColor(if (a.exp > 0 && a.exp < now) red else sub)
-      a.sumS.text = if (a.sw.isChecked) "ON" else "OFF"
-      a.sumS.background = rr(if (a.sw.isChecked) 0xFF10B981.toInt() else sub, 12)
+      val ready = valid(a)
+      a.sumS.text = if (!ready) "SETUP" else if (a.sw.isChecked) "ON" else "OFF"
+      a.sumS.background = rr(if (!ready) amber else if (a.sw.isChecked) 0xFF10B981.toInt() else sub, 12)
     }
   }
 
@@ -442,50 +507,91 @@ class MainActivity : Activity() {
     .put("n", a.n.selectedItem as Int).put("on", a.sw.isChecked)
     .put("role", a.role).put("srv", a.srv).put("exp", a.exp)
 
-  private fun save() {
-    val arr = JSONArray(); accs.forEach { arr.put(js(it)) }
-    P.edit().putString("acc2", arr.toString()).apply()
+  private fun serialize(): String { val arr = JSONArray(); accs.forEach { arr.put(js(it)) }; return arr.toString() }
+  private fun save() { P.edit().putString("acc2", serialize()).apply() }
+  /** Called by the VPNJantit manager before it writes a new account, so nothing typed here is lost. */
+  fun saveNow() { if (::accBox.isInitialized && accs.isNotEmpty()) save() }
+  private fun accsDirty() = ::accBox.isInitialized && accs.isNotEmpty() && serialize() != (P.getString("acc2", "[]") ?: "[]")
+
+  private fun loadAccounts() {
+    val saved = try { JSONArray(P.getString("acc2", "[]")) } catch (e: Exception) { JSONArray() }
+    if (saved.length() == 0) addCard(null) else for (i in 0 until saved.length()) addCard(saved.getJSONObject(i))
+  }
+
+  /** Rebuilds the account list from the saved data (a background VPNJantit account arrived). */
+  private fun reloadAccounts() {
+    accBox.removeAllViews(); detailHolder.removeAllViews(); accs.clear()
+    loadAccounts(); closeDetail()
   }
 
   private fun openDetail(a: Acc) {
     for (i in 0 until detailHolder.childCount) detailHolder.getChildAt(i).visibility = View.GONE
     a.v.visibility = View.VISIBLE
     accListV.visibility = View.GONE; accDetailV.visibility = View.VISIBLE; accDetailV.scrollTo(0, 0)
+    accDetailV.alpha = 0f; accDetailV.translationX = dp(24).toFloat()
+    accDetailV.animate().alpha(1f).translationX(0f).setDuration(220).start()
   }
 
   private fun closeDetail() {
     if (!::accDetailV.isInitialized) return
+    if (accDetailV.visibility != View.VISIBLE) return
     accDetailV.visibility = View.GONE; accListV.visibility = View.VISIBLE
+    accListV.alpha = 0f; accListV.animate().alpha(1f).setDuration(200).start()
   }
 
   @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
   override fun onBackPressed() {
-    if (::accDetailV.isInitialized && accDetailV.visibility == View.VISIBLE) closeDetail() else super.onBackPressed()
+    if (::appPickV.isInitialized && appPickV.visibility == View.VISIBLE) closeAppPicker()
+    else if (::accDetailV.isInitialized && accDetailV.visibility == View.VISIBLE) closeDetail() else super.onBackPressed()
   }
 
   private fun valid(a: Acc) = listOf(a.ns, a.pk, a.us, a.pw, a.dns).none { it.text.isNullOrBlank() }
 
+  /** The "add account" row: same size and style as an account row. */
+  private fun addRowView(): View = LinearLayout(this).apply {
+    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+    background = rr(cardC, 22, strokeC); elevation = dp(2).toFloat()
+    setPadding(dp(16), dp(14), dp(16), dp(14)); layoutParams = lp(10)
+    addView(badge("+", 44))
+    addView(LinearLayout(this@MainActivity).apply {
+      orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12) }
+      addView(tv("Add account", 16f, fg, true)); addView(tv("Enter NS, key, user and password", 12f, sub))
+    })
+    addView(tv("›", 24f, sub, true).apply { setPadding(dp(10), 0, 0, 0) })
+    setOnClickListener { addCard(null); save(); openDetail(accs.last()) }
+    pressable(this)
+  }
+
+  private fun switchRow(title: String, sw: Switch) = row(
+    tv(title, 14f, fg, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }, sw
+  ).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(10) }
+
   private fun buildAccounts(): View {
     val col = pageCol()
     head(col, "Accounts", "Each account opens its own set of tunnels")
-    hintTv = tv("", 12f, amber).apply { layoutParams = lp(6) }
+    hintTv = tv("", 12.5f, amber, true).apply { layoutParams = lp(6) }
     col.addView(hintTv)
 
-    // VPNJantit helper card
-    val vj = card(14)
-    vj.addView(secTitle("VPNJantit auto accounts"))
-    vj.addView(tv("Creates and renews free accounts for you. Details are in Help.", 12f, sub).apply { layoutParams = lp(6); setLineSpacing(0f, 1.1f) })
+    // VPNJantit helper card (compact)
+    val vj = card(12).apply { setPadding(dp(16), dp(14), dp(16), dp(14)) }
+    vjStateTv = tv("Manual", 11f, sub, true).apply { setPadding(dp(10), dp(4), dp(10), dp(4)); background = rr(tintBg(sub, 0x22), 10) }
+    vj.addView(row(
+      badge("VJ", 44),
+      LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12) }
+        addView(tv("VPNJantit auto accounts", 15f, fg, true)); addView(tv("Creates and renews free accounts", 12f, sub))
+      },
+      vjStateTv).apply { gravity = Gravity.CENTER_VERTICAL })
+    vj.addView(divider())
     val vjAuto = tint(Switch(this)).apply {
       isChecked = P.getBoolean("vj_auto", false)
       setOnCheckedChangeListener { _, c ->
-        P.edit().putBoolean("vj_auto", c).apply(); VjReceiver.schedule(this@MainActivity)
-        toast(if (c) "Auto-renew ON: MAIN + BACKUP accounts will be created automatically" else "Auto-renew OFF")
-        if (c) { vjHold = 0L; vjCheck(true) }
+        P.edit().putBoolean("vj_auto", c).putLong("vj_hold", 0L).apply(); VjReceiver.schedule(this@MainActivity)
+        toast(if (c) "Auto-renew ON" else "Auto-renew OFF")
+        if (c) vjCheckUi(true)
       }
     }
-    vj.addView(row(
-      tv("Auto-renew", 15f, fg, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }, vjAuto
-    ).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(12) })
+    vj.addView(switchRow("Auto-renew", vjAuto))
     val vjBk = tint(Switch(this)).apply {
       isChecked = P.getBoolean("vj_backup", false)
       setOnCheckedChangeListener { _, c ->
@@ -493,29 +599,25 @@ class MainActivity : Activity() {
         toast(if (c) "A BACKUP account will be kept too" else "Only one account will be kept")
       }
     }
+    vj.addView(switchRow("Also keep a BACKUP account", vjBk))
     vj.addView(row(
-      tv("Also keep a BACKUP account", 15f, fg, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }, vjBk
-    ).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(12) })
-    vj.addView(row(
-      btn("Create account", deep) { pickVpnJantitServer() },
-      btn("Check now", fieldC) { vjHold = 0L; vjCheck(true) }))
-    vj.addView(row(
-      btn("Clear site cookies", fieldC) {
-        startActivityForResult(Intent(this, VpnJantitActivity::class.java).putExtra(VpnJantit.EXTRA_ONLY_CLEAR, true), VpnJantit.REQ_CLEAR)
-      }))
+      mini("Create", true) { pickVpnJantitServer() },
+      mini("Check now", false) { P.edit().putLong("vj_hold", 0L).apply(); vjCheckUi(true) },
+      mini("Clear cookies", false) { try { VjService.clear(this) ; toast("VPNJantit site cookies cleared") } catch (e: Exception) { toast("Could not clear cookies") } }
+    ).apply { layoutParams = lp(14) })
     col.addView(vj)
 
     detailHolder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     accBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-    addB = btn("+ Add account manually", deep) { addCard(null); save(); openDetail(accs.last()) }.apply { layoutParams = lp(14) }
+    addB = addRowView()
     col.addView(accBox); col.addView(addB)
-    val saved = try { JSONArray(P.getString("acc2", "[]")) } catch (e: Exception) { JSONArray() }
-    if (saved.length() == 0) addCard(null) else for (i in 0 until saved.length()) addCard(saved.getJSONObject(i))
+    loadAccounts()
     val listV = ScrollView(this).apply { addView(col) }
     val dcol = pageCol()
     dcol.addView(tv("‹  Accounts", 15f, acc, true).apply {
       background = rr(fieldC, 20); setPadding(dp(16), dp(9), dp(16), dp(9)); setOnClickListener { closeDetail() }
       layoutParams = LinearLayout.LayoutParams(-2, -2)
+      pressable(this)
     })
     dcol.addView(detailHolder)
     accDetailV = ScrollView(this).apply { addView(dcol); visibility = View.GONE }
@@ -526,7 +628,9 @@ class MainActivity : Activity() {
   // ---------- Logs ----------
   private fun buildLogs(): View {
     val col = pageCol().apply { setPadding(dp(16), dp(22), dp(16), dp(8)) }
-    head(col, "Logs", "Live connection log (A1#2 = account 1, tunnel 2)")
+    col.addView(tv("Logs", 26f, fg, true))
+    logSub = tv("Live connection log", 13f, sub).apply { layoutParams = lp(2) }
+    col.addView(logSub)
     col.addView(row(
       btn("Clear", fieldC) { LogBus.clear(); lastLog = ""; logTv.text = "" },
       btn("Copy log") { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("log", LogBus.text())); toast("Copied") }))
@@ -557,6 +661,7 @@ class MainActivity : Activity() {
       val v = (e.text.toString().toIntOrNull() ?: def).coerceIn(lo, hi)
       e.setText(v.toString()); P.edit().putInt(key, v).apply()
       if (key == "mbps") Limit.load(P)
+      if (key == "logmin") LogBus.configure(P)
     }
     e.setOnFocusChangeListener { _, f -> if (!f) commit() }
     e.setOnEditorActionListener { v, _, _ -> commit(); v.clearFocus(); false }
@@ -569,10 +674,21 @@ class MainActivity : Activity() {
     helpNotes.add(title to desc)
     val sw = tint(Switch(this).apply { isChecked = P.getBoolean(key, def) })
     sw.setOnCheckedChangeListener { _, c ->
-      P.edit().putBoolean(key, c).apply(); if (key == "lim") Limit.load(P); toast(msg(c))
+      P.edit().putBoolean(key, c).apply(); if (key == "lim") Limit.load(P); if (key == "logauto" || key == "dbg") LogBus.configure(P); toast(msg(c))
     }
     if (col.childCount > 1) col.addView(divider())
     col.addView(row(settingLabel(title), sw).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(12) })
+  }
+
+  /** A settings row you tap: title on the left, the current value (and an arrow) on the right. */
+  private fun tapRow(col: LinearLayout, title: String, desc: String, value: TextView, f: () -> Unit) {
+    helpNotes.add(title to desc)
+    if (col.childCount > 1) col.addView(divider())
+    value.textSize = 13f; value.setTextColor(acc); value.setTypeface(value.typeface, Typeface.BOLD); value.gravity = Gravity.END
+    val r = row(settingLabel(title), value, tv("›", 20f, sub, true).apply { setPadding(dp(8), 0, 0, 0) })
+    r.gravity = Gravity.CENTER_VERTICAL; r.layoutParams = lp(12); r.setPadding(0, dp(2), 0, dp(2))
+    r.setOnClickListener { f() }
+    pressable(r); col.addView(r)
   }
 
   private fun buildSettings(): View {
@@ -614,13 +730,29 @@ class MainActivity : Activity() {
     numRow(s4, "Tunnel start port", "Tunnels start from this port (A1#1 = start + 1 ...). Busy ports are skipped automatically. Applies at next START.", "tport", 2000, 1024, 65000)
     col.addView(s4)
 
-    val s5 = card(); s5.addView(secTitle("Appearance and background"))
+    val s6 = card(); s6.addView(secTitle("Network and apps"))
+    fdnsVal = tv("", 13f, acc, true); appfVal = tv("", 13f, acc, true)
+    tapRow(s6, "Forward DNS", "The DNS server your phone's DNS questions are sent to, through the tunnel. Pick Cloudflare, Google, Quad9, AdGuard or OpenDNS, or type your own IPv4 address. If sites do not open, try another one. Applies at next START.", fdnsVal) { pickForwardDns() }
+    tapRow(s6, "App filter", "Choose which apps use the VPN. All apps = everything goes through the tunnel. Only selected = just the apps you tick use the VPN, the rest use your normal internet. All except = every app uses the VPN except the ones you tick. Applies at next START.", appfVal) { openAppPicker() }
+    col.addView(s6)
+
+    val s7 = card(); s7.addView(secTitle("Logs"))
+    swRow(s7, "Auto clear logs", "Clears the on-screen log by itself so it never gets long. The Copy button still gives you what is on screen at that moment.", "logauto", true) { if (it) "Logs will clear automatically" else "Logs will not clear by themselves" }
+    swRow(s7, "Debug logs", "ON: full details (timings, resolver, ports, DNS query rates, VPNJantit steps). OFF: short clean lines only, such as connected, failed, retrying. Turn ON when something does not work and you need to see why.", "dbg", false) { if (it) "Debug logs ON (details)" else "Debug logs OFF (clean)" }
+    numRow(s7, "Clear every (minutes)", "How often the log is cleared when Auto clear logs is ON.", "logmin", 3, 1, 120)
+    col.addView(s7)
+
+    val s5 = card(); s5.addView(secTitle("Appearance and permissions"))
     s5.addView(row(
       btn("Dark", if (dark) acc else fieldC) { P.edit().putBoolean("dark", true).apply(); icon(true); save(); recreate() },
       btn("Light", if (!dark) acc else fieldC) { P.edit().putBoolean("dark", false).apply(); icon(false); save(); recreate() }))
-    s5.addView(row(btn("Battery / notification permission", fieldC) { askBackground() }))
-    helpNotes.add("Appearance and background" to "The launcher icon changes with the theme (it can take a few seconds to update). Turn off battery optimization and allow notifications so the VPN keeps running in the background.")
+    notifVal = tv("", 13f, acc, true); overlayVal = tv("", 13f, acc, true); battVal = tv("", 13f, acc, true)
+    tapRow(s5, "Notifications", "Needed for the VPN notification, the captcha alert and the account-ready message. If it says Blocked, tap to open the app's notification settings.", notifVal) { askNotifications() }
+    tapRow(s5, "Display over other apps", "Needed to create VPNJantit accounts in the background. The captcha pops up on top of whatever app you are using only when it needs you, then goes away. On some phones (Xiaomi, Oppo, Vivo) also allow Autostart and Show pop-ups in the app's permission page.", overlayVal) { askOverlay() }
+    tapRow(s5, "Battery optimization", "Turn it off for this app so Android does not stop the VPN or the account creation in the background.", battVal) { askBattery() }
+    helpNotes.add("Theme" to "The launcher icon changes with the theme (it can take a few seconds to update).")
     col.addView(s5)
+    updateSettingSummaries()
     return ScrollView(this).apply { addView(col) }
   }
 
@@ -669,12 +801,13 @@ Mollad DNS sends your whole phone's internet through a DNS tunnel (dnstt) with S
 - To edit accounts or switch them ON/OFF, stop the VPN first. Fields are locked while it runs.
 """)
     helpCard(col, "VPNJantit auto accounts", """
-- Create account: pick a server (India list). The app works in the background with no window on screen, fills a random username and password, waits for the Cloudflare check to pass, taps Create, then reads the NS domain, public key, username, password and expiry into a new account.
-- If the site asks for a real captcha, only then a window opens and you tap it yourself. The app never tries to bypass a captcha.
+- First allow Settings > Display over other apps (one time). Then the account is created fully in the background, even if you leave the app: it fills a random username and password, waits for the Cloudflare check, taps Create, then reads the NS domain, public key, username, password and expiry into the account.
+- The orange line at the top of Accounts, the notification and the Logs page show the current step.
+- If the site asks for a real captcha, only that captcha pops up on top of your screen. Tap it, it goes away and the work continues. "Continue in background" hides it for a minute. The app never tries to bypass a captcha.
 - Auto-renew keeps your MAIN account alive. Turn on "Also keep a BACKUP account" if you want a second one. An account made earlier is reused, so no duplicate is created. MAIN prefers DigitalOcean servers (in6, in1); BACKUP prefers the longest validity (in10). A new account is made about 4 hours before the old one expires and replaces it. If the VPN is running it restarts once to load the new account.
 - Server Full: the app marks that server full until the daily reset (21:00 GMT+7, about 7:30 PM IST) and tries the next one.
-- The site only allows one account every 5 minutes, so the app waits 6-7 minutes between accounts. Keep the app open during that wait.
-- When the app is closed you get a notification before expiry. Tap it and everything continues.
+- The site only allows one account every 5 minutes, so the app waits 6-7 minutes between accounts and tries again by itself (an alarm wakes it, the app need not be open).
+- If Android blocks the background start you get a notification instead. Tap it and the account is created.
 - Clear site cookies resets the hidden browser so the site sees a fresh visitor.
 - Do not use an ad-block DNS (like AdGuard) while creating accounts. The site blocks the form when it detects one.
 """)
@@ -718,21 +851,28 @@ The Connect button at the bottom connects or disconnects. In the card you see up
         addView(navIcons[i], LinearLayout.LayoutParams(dp(22), dp(22)).apply { bottomMargin = dp(2) })
         addView(navLabels[i])
         setOnClickListener { show(i) }
+        pressable(this)
       }
     }
     navItems.forEach { bar.addView(it) }
     return bar
   }
 
+  private var shown = false
+
   private fun show(i: Int) {
     settingCommits.forEach { it() }
+    val animate = !shown || i != cur
+    shown = true
     cur = i
     if (i != 1) closeDetail()
+    closeAppPicker()
     pages.forEachIndexed { k, p -> p.visibility = if (k == i) View.VISIBLE else View.GONE }
     navIcons.forEachIndexed { k, v -> v.color = if (k == i) acc else sub; v.invalidate() }
     navLabels.forEachIndexed { k, t -> t.setTextColor(if (k == i) acc else sub) }
     navItems.forEachIndexed { k, v -> v.background = if (k == i) rr(tintBg(acc, 0x22), 24) else null }
     refresh()
+    if (animate) colOf(pages[i])?.let { c -> staggerIn((0 until c.childCount.coerceAtMost(8)).map { c.getChildAt(it) }) }
   }
 
   // ---------- Permissions / connect ----------
@@ -791,7 +931,14 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     heroBtn.isEnabled = pending == null
     statePill.text = when (state) { 2 -> "Connected"; 1 -> "Connecting..."; 3 -> "Disconnecting..."; else -> "Disconnected" }
     statusTv.text = when (state) { 2 -> "You are online"; 1 -> "Getting tunnels ready"; 3 -> "Closing tunnels"; else -> "Ready when you are" }
-    hintTv.text = if (vjBusy) "Creating the VPNJantit account in the background..." else if (r) "Stop the VPN to edit accounts or switch them ON/OFF" else ""
+    VjManager.tick(this)
+    val vl = VjManager.line(this)
+    hintTv.text = if (vl.isNotEmpty()) "●  $vl" else if (r) "Stop the VPN to edit accounts or switch them ON/OFF" else ""
+    hintTv.visibility = if (hintTv.text.isEmpty()) View.GONE else View.VISIBLE
+    val vjWork = VjManager.isBusy(); val vjAutoOn = P.getBoolean("vj_auto", false)
+    val vjCol = if (vjWork) amber else if (vjAutoOn) 0xFF10B981.toInt() else sub
+    vjStateTv.text = if (vjWork) "Working" else if (vjAutoOn) "Auto" else "Manual"
+    vjStateTv.setTextColor(vjCol); vjStateTv.background = rr(tintBg(vjCol, 0x22), 10)
 
     val now = System.currentTimeMillis(); val u = Stats.up.get(); val d = Stats.down.get()
     if (now - lastT >= 800) {
@@ -829,7 +976,10 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     if (cur == 2) {
       val t = LogBus.text()
       if (t != lastLog) { lastLog = t; logTv.text = t; logSv.post { logSv.fullScroll(View.FOCUS_DOWN) } }
+      val nc = LogBus.nextClearIn()
+      logSub.text = if (nc > 0) "Live log  ·  auto-clears in ${nc / 60}m ${nc % 60}s" else "Live log  ·  auto clear is off"
     }
+    if (cur == 3) updatePermSummaries()
     h.removeCallbacksAndMessages(null)
     h.postDelayed({ refresh() }, 1000)
   }
@@ -847,170 +997,307 @@ The Connect button at the bottom connects or disconnects. In the card you see up
       }
     } catch (e: Throwable) {}
     P = getSharedPreferences("a", 0)
+    LogBus.configure(P)
+    Notif.channels(this)
+    inst = this
     dark = P.getBoolean("dark", false)
     window.statusBarColor = bg; window.navigationBarColor = bg
     if (!dark) window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
     val hv = buildHome(); val av = buildAccounts(); val lv = buildLogs(); val sv = buildSettings(); val iv = buildHelp()
+    val picker = buildAppPicker()
     pages = listOf(hv, av, lv, sv, iv)
-    val frame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); pages.forEach { addView(it) } }
+    val frame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); pages.forEach { addView(it) }; addView(picker) }
     setContentView(LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg); addView(frame); addView(buildNav()) })
     show(0)
+    save()
     askBackground()
   }
 
-  override fun onPause() { super.onPause(); settingCommits.forEach { it() }; save(); h.removeCallbacksAndMessages(null) }
-  override fun onResume() { super.onResume(); refresh(); if (P.getBoolean("vj_auto", false)) vjCheck(false) }
+  override fun onPause() {
+    resumed = false
+    super.onPause(); settingCommits.forEach { it() }; save(); h.removeCallbacksAndMessages(null)
+    pulse?.cancel(); pulse = null; heroState = -1
+  }
+  override fun onResume() {
+    super.onResume(); resumed = true
+    // a VPNJantit account may have been created while the app was in the background
+    if (accsDirty()) reloadAccounts()
+    refresh()
+    if (P.getBoolean("vj_auto", false)) vjCheckUi(false)
+  }
   override fun onNewIntent(i: Intent?) {
     super.onNewIntent(i); setIntent(i)
-    if (i?.getBooleanExtra("vj_auto", false) == true) { vjHold = 0L; vjCheck(true) }
+    if (i?.getBooleanExtra("vj_auto", false) == true) { P.edit().putLong("vj_hold", 0L).apply(); vjCheckUi(true) }
   }
   override fun onDestroy() {
-    super.onDestroy(); h.removeCallbacksAndMessages(null); vh.removeCallbacksAndMessages(null)
+    super.onDestroy(); h.removeCallbacksAndMessages(null); pulse?.cancel()
+    if (inst === this) inst = null
   }
 
   private fun begin() { startForegroundService(Intent(this, VpnSvc::class.java)) }
   override fun onActivityResult(r: Int, c: Int, d: Intent?) {
-    if (r == VpnJantit.REQ_CODE) { onVpnJantitResult(c, d); return }
-    if (r == VpnJantit.REQ_CLEAR) { toast("VPNJantit site cookies cleared"); return }
     if (c == RESULT_OK) begin() else pending = null
   }
 
-  // ---------- VPNJantit auto account ----------
-  private val vh = Handler(Looper.getMainLooper())
-  private var vjBusy = false
-  private var vjWaiting = false
-  private var vjHold = 0L
-  private var vjRole = ""
-  private var vjSrv = ""
-  private var vjTries = 0
-
-  private val roleOrder = mapOf(
-    "main" to listOf("in6", "in1", "in2", "in5", "in10"),
-    "backup" to listOf("in10", "in2", "in5", "in1", "in6"))
-
-  /** The site's daily reset: 21:00 GMT+7 (about 7:30 PM IST). */
-  private fun nextReset(): Long {
-    val c = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("GMT+07:00"))
-    c.set(java.util.Calendar.HOUR_OF_DAY, 21); c.set(java.util.Calendar.MINUTE, 0)
-    c.set(java.util.Calendar.SECOND, 0); c.set(java.util.Calendar.MILLISECOND, 0)
-    if (c.timeInMillis <= System.currentTimeMillis()) c.add(java.util.Calendar.DAY_OF_YEAR, 1)
-    return c.timeInMillis
-  }
-
-  private fun isFull(code: String) = P.getLong("vjfull_$code", 0L) > System.currentTimeMillis()
-  private fun roleAcc(role: String) = accs.firstOrNull { it.role == role }
-  private fun needsRenew(a: Acc?) = a == null || (a.exp > 0 && a.exp - System.currentTimeMillis() <= VpnJantit.RENEW_BEFORE_MS)
-  private fun vjRoles() = if (P.getBoolean("vj_backup", false)) listOf("main", "backup") else listOf("main")
-
-  /** An account the app created earlier (no role yet) becomes MAIN/BACKUP, so no duplicate is made. */
-  private fun adoptRoles() {
-    val now = System.currentTimeMillis()
-    for (role in vjRoles()) {
-      if (roleAcc(role) != null) continue
-      val cand = accs.firstOrNull { it.role.isBlank() && it.srv.isNotBlank() && it.exp > now } ?: continue
-      cand.role = role
+  // ---------- Permissions and settings helpers ----------
+  private fun askNotifications() {
+    if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+      && !P.getBoolean("notif_asked", false)) {
+      P.edit().putBoolean("notif_asked", true).apply()
+      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2); return
     }
+    try { startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)) }
+    catch (e: Exception) { toast("Open Settings > Apps > Mollad DNS > Notifications") }
   }
 
-  private fun vjNeeded(): String? { adoptRoles(); return vjRoles().firstOrNull { needsRenew(roleAcc(it)) } }
-
-  private fun vjCheck(manual: Boolean) {
-    if (vjBusy || vjWaiting) { if (manual) toast("VPNJantit is already working on it"); return }
-    if (!manual && System.currentTimeMillis() < vjHold) return
-    val role = vjNeeded()
-    if (role == null) { if (manual) toast("MAIN and BACKUP accounts are both fine"); return }
-    vjStart(role)
+  private fun askOverlay() {
+    if (Settings.canDrawOverlays(this)) { toast("Display over other apps is already allowed"); return }
+    android.app.AlertDialog.Builder(this).setTitle("Allow display over other apps")
+      .setMessage("VPNJantit accounts are created in the background. Mollad DNS needs this permission so the captcha can pop up on top of any app, only when it needs you. Nothing else is shown.")
+      .setPositiveButton("Open settings") { _, _ ->
+        try { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
+        catch (e: Exception) { toast("Open Settings > Apps > Mollad DNS > Display over other apps") }
+      }
+      .setNegativeButton("Not now", null).show()
   }
 
-  private fun vjSchedule(role: String, ms: Long) {
-    vjWaiting = true
-    val wait = ms + (0..40_000).random()
-    toast("${role.uppercase()} account will be created in ${wait / 60000 + 1} min (keep the app open)")
-    vh.removeCallbacksAndMessages(null)
-    vh.postDelayed({ vjWaiting = false; vjStart(role) }, wait)
+  private fun askBattery() {
+    if (getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) { toast("Battery optimization is already off"); return }
+    try { startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))) }
+    catch (e: Exception) { toast("Open Settings > Apps > Mollad DNS > Battery") }
   }
 
-  private fun vjStart(role: String) {
-    if (vjBusy) return
-    val now = System.currentTimeMillis()
-    val wait = P.getLong("vj_last", 0L) + VpnJantit.COOLDOWN_MS - now
-    if (wait > 0) { vjSchedule(role, wait); return }
-    val other = roleAcc(if (role == "main") "backup" else "main")?.srv
-    val free = roleOrder[role]!!.filter { !isFull(it) }
-    val srv = free.firstOrNull { it != other } ?: free.firstOrNull()
-    if (srv == null) {
-      val t = nextReset()
-      val hhmm = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date(t))
-      toast("All servers are full. Will retry after the reset ($hhmm local time)")
-      vjSchedule(role, t - now)
-      return
+  private fun updateSettingSummaries() {
+    if (!::fdnsVal.isInitialized) return
+    fdnsVal.text = P.getString("fdns", "1.1.1.1") ?: "1.1.1.1"
+    val n = (P.getString("appf_list", "") ?: "").split(",").count { it.isNotBlank() }
+    appfVal.text = when (P.getInt("appf_mode", 0)) { 1 -> "Only $n app(s)"; 2 -> "All except $n"; else -> "All apps" }
+  }
+
+  private fun updatePermSummaries() {
+    if (!::notifVal.isInitialized) return
+    val nOk = getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled()
+    val oOk = Settings.canDrawOverlays(this)
+    val bOk = getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+    notifVal.text = if (nOk) "Allowed" else "Blocked"; notifVal.setTextColor(if (nOk) 0xFF10B981.toInt() else red)
+    overlayVal.text = if (oOk) "Allowed" else "Not allowed"; overlayVal.setTextColor(if (oOk) 0xFF10B981.toInt() else red)
+    battVal.text = if (bOk) "Unrestricted" else "Restricted"; battVal.setTextColor(if (bOk) 0xFF10B981.toInt() else amber)
+  }
+
+  private val dnsChoices = listOf(
+    "Cloudflare" to "1.1.1.1", "Google" to "8.8.8.8", "Quad9" to "9.9.9.9",
+    "AdGuard (blocks ads)" to "94.140.14.14", "OpenDNS" to "208.67.222.222")
+
+  private fun pickForwardDns() {
+    val cur = P.getString("fdns", "1.1.1.1") ?: "1.1.1.1"
+    val names = (dnsChoices.map { it.first + "  (" + it.second + ")" } + "Custom...").toTypedArray()
+    val idx = dnsChoices.indexOfFirst { it.second == cur }
+    android.app.AlertDialog.Builder(this).setTitle("Forward DNS")
+      .setSingleChoiceItems(names, if (idx < 0) dnsChoices.size else idx) { d, w ->
+        d.dismiss()
+        if (w < dnsChoices.size) {
+          P.edit().putString("fdns", dnsChoices[w].second).apply(); updateSettingSummaries()
+          toast("Forward DNS: " + dnsChoices[w].second + " (applies at next START)")
+        } else askCustomDns()
+      }.setNegativeButton("Cancel", null).show()
+  }
+
+  private fun askCustomDns() {
+    val e = EditText(this).apply {
+      hint = "e.g. 9.9.9.11"; setSingleLine(); setText(P.getString("fdns", "") ?: ""); setPadding(dp(20), dp(14), dp(20), dp(14))
     }
-    vjBusy = true; vjRole = role; vjSrv = srv
-    startActivityForResult(Intent(this, VpnJantitActivity::class.java).putExtra(VpnJantit.EXTRA_SERVER, srv), VpnJantit.REQ_CODE)
+    android.app.AlertDialog.Builder(this).setTitle("Custom forward DNS").setView(e)
+      .setPositiveButton("Save") { _, _ ->
+        val v = e.text.toString().trim()
+        if (Regex("^\\d{1,3}(\\.\\d{1,3}){3}\$").matches(v)) {
+          P.edit().putString("fdns", v).apply(); updateSettingSummaries(); toast("Forward DNS: $v (applies at next START)")
+        } else toast("Please type an IPv4 address like 9.9.9.11")
+      }.setNegativeButton("Cancel", null).show()
+  }
+
+  // ---------- App filter picker ----------
+  private class AppItem(val pkg: String, val label: String, val icon: Drawable?)
+  private class AppRow(val root: LinearLayout, val icon: ImageView, val name: TextView, val pkg: TextView, val check: TextView)
+
+  private val appAll = ArrayList<AppItem>()
+  private val appShown = ArrayList<AppItem>()
+  private val appSel = HashSet<String>()
+  private var appQuery = ""
+  private lateinit var appPickV: LinearLayout
+  private lateinit var appListV: ListView
+  private lateinit var appCountTv: TextView
+  private lateinit var appModeChips: List<TextView>
+
+  private fun newAppRow(): AppRow {
+    val icon = ImageView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)) }
+    val name = tv("", 15f, fg, true).apply { setSingleLine(); ellipsize = android.text.TextUtils.TruncateAt.END }
+    val pkg = tv("", 11f, sub).apply { setSingleLine(); ellipsize = android.text.TextUtils.TruncateAt.END }
+    val check = TextView(this).apply { gravity = Gravity.CENTER; textSize = 14f; setTypeface(typeface, Typeface.BOLD); layoutParams = LinearLayout.LayoutParams(dp(28), dp(28)) }
+    val info = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12); rightMargin = dp(8) }
+      addView(name); addView(pkg)
+    }
+    val root = LinearLayout(this).apply {
+      orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(6), dp(8), dp(6), dp(8))
+      addView(icon); addView(info); addView(check)
+    }
+    return AppRow(root, icon, name, pkg, check)
+  }
+
+  private fun styleModeChips() {
+    val m = P.getInt("appf_mode", 0)
+    appModeChips.forEachIndexed { i, t ->
+      t.background = rr(if (i == m) acc else fieldC, 14)
+      t.setTextColor(if (i == m) ink else fg)
+    }
+    if (::appCountTv.isInitialized) appCountTv.alpha = if (m == 0) 0.45f else 1f
+  }
+
+  private fun buildAppPicker(): View {
+    val v = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL; setBackgroundColor(bg); visibility = View.GONE; isClickable = true
+      setPadding(dp(16), dp(22), dp(16), dp(8))
+    }
+    v.addView(tv("‹  Settings", 15f, acc, true).apply {
+      background = rr(fieldC, 20); setPadding(dp(16), dp(9), dp(16), dp(9)); setOnClickListener { closeAppPicker() }
+      layoutParams = LinearLayout.LayoutParams(-2, -2); pressable(this)
+    })
+    v.addView(tv("App filter", 26f, fg, true).apply { layoutParams = lp(14) })
+    v.addView(tv("Choose which apps use the VPN. Applies at next START.", 13f, sub).apply { layoutParams = lp(2) })
+    val labels = listOf("All apps", "Only selected", "All except")
+    appModeChips = labels.mapIndexed { i, t ->
+      TextView(this).apply {
+        text = t; textSize = 13f; gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD)
+        layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply { setMargins(dp(3), 0, dp(3), 0) }
+        setOnClickListener { P.edit().putInt("appf_mode", i).apply(); styleModeChips(); updateSettingSummaries() }
+        pressable(this)
+      }
+    }
+    v.addView(row(*appModeChips.toTypedArray()).apply { layoutParams = lp(14) })
+    val search = et("Search apps").apply {
+      addTextChangedListener(object : android.text.TextWatcher {
+        override fun afterTextChanged(s: android.text.Editable?) { appQuery = s?.toString()?.trim()?.lowercase() ?: ""; filterApps() }
+        override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+        override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
+      })
+    }
+    v.addView(search)
+    appCountTv = tv("", 12f, sub).apply { layoutParams = lp(8) }
+    v.addView(row(
+      appCountTv.apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) },
+      tv("Clear selection", 12f, acc, true).apply { setPadding(dp(8), dp(4), dp(4), dp(4)); setOnClickListener { appSel.clear(); saveAppSel(); filterApps() } }
+    ).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(8) })
+    appListV = ListView(this).apply {
+      divider = null; dividerHeight = 0; isVerticalScrollBarEnabled = false
+      layoutParams = LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(6) }
+      adapter = object : BaseAdapter() {
+        override fun getCount() = appShown.size
+        override fun getItem(p: Int): Any = appShown[p]
+        override fun getItemId(p: Int) = p.toLong()
+        override fun getView(p: Int, cv: View?, parent: ViewGroup): View {
+          val r: AppRow
+          if (cv == null) { r = newAppRow(); r.root.tag = r } else r = cv.tag as AppRow
+          val it = appShown[p]
+          val on = appSel.contains(it.pkg)
+          r.name.text = it.label; r.pkg.text = it.pkg; r.icon.setImageDrawable(it.icon)
+          r.check.text = if (on) "✓" else ""
+          r.check.setTextColor(white)
+          r.check.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            if (on) setColor(acc) else setStroke(dp(2), strokeC)
+          }
+          return r.root
+        }
+      }
+      setOnItemClickListener { _, _, pos, _ ->
+        if (pos in 0 until appShown.size) {
+          val pk = appShown[pos].pkg
+          if (!appSel.remove(pk)) appSel.add(pk)
+          saveAppSel(); (adapter as BaseAdapter).notifyDataSetChanged(); updateAppCount()
+        }
+      }
+    }
+    v.addView(appListV)
+    appPickV = v
+    return v
+  }
+
+  private fun saveAppSel() { P.edit().putString("appf_list", appSel.joinToString(",")).apply(); updateSettingSummaries() }
+
+  private fun updateAppCount() { appCountTv.text = "${appSel.size} selected  ·  ${appAll.size} apps" }
+
+  private fun filterApps() {
+    val src = appAll.filter { appQuery.isEmpty() || it.label.lowercase().contains(appQuery) || it.pkg.lowercase().contains(appQuery) }
+    appShown.clear()
+    appShown.addAll(src.sortedWith(compareByDescending<AppItem> { appSel.contains(it.pkg) }.thenBy { it.label.lowercase() }))
+    (appListV.adapter as BaseAdapter).notifyDataSetChanged()
+    updateAppCount()
+  }
+
+  private fun openAppPicker() {
+    appSel.clear()
+    (P.getString("appf_list", "") ?: "").split(",").filter { it.isNotBlank() }.forEach { appSel.add(it) }
+    styleModeChips(); updateAppCount()
+    appPickV.visibility = View.VISIBLE
+    appPickV.alpha = 0f; appPickV.translationY = dp(24).toFloat()
+    appPickV.animate().alpha(1f).translationY(0f).setDuration(220).start()
+    Thread {
+      val pm = packageManager
+      val items = ArrayList<AppItem>()
+      try {
+        val q = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val seen = HashSet<String>()
+        for (ri in pm.queryIntentActivities(q, 0)) {
+          val pk = ri.activityInfo.packageName
+          if (pk == packageName || !seen.add(pk)) continue
+          val ic: Drawable? = try { ri.loadIcon(pm) } catch (e: Exception) { null }
+          items.add(AppItem(pk, ri.loadLabel(pm).toString(), ic))
+        }
+      } catch (e: Exception) { }
+      items.sortBy { it.label.lowercase() }
+      runOnUiThread { appAll.clear(); appAll.addAll(items); filterApps() }
+    }.start()
+  }
+
+  private fun closeAppPicker() {
+    if (!::appPickV.isInitialized || appPickV.visibility != View.VISIBLE) return
+    appPickV.visibility = View.GONE
+    updateSettingSummaries()
+  }
+
+  // ---------- VPNJantit auto account (the work itself runs in the background service) ----------
+  /** Called by the VPNJantit manager (main thread) when something changed. */
+  fun vjChanged(reload: Boolean) {
+    if (!resumed || !::accBox.isInitialized) return
+    if (reload) reloadAccounts()
+    refresh()
+  }
+
+  private fun vjCheckUi(manual: Boolean) {
+    save()
+    val r = VjManager.check(this, manual)
+    if (accsDirty()) reloadAccounts()   // an older account may have become MAIN/BACKUP
+    when (r) {
+      "busy" -> if (manual) toast("VPNJantit is already working on it")
+      "none" -> if (manual) toast("MAIN and BACKUP accounts are both fine")
+      "perm" -> if (manual) askOverlay()
+      "wait" -> if (manual) toast("Waiting for the site's cooldown. See the status line on top.")
+      "fail" -> toast("Could not start the account creator")
+      else -> { }
+    }
+    refresh()
   }
 
   private fun pickVpnJantitServer() {
-    if (vjBusy) return
+    if (VjManager.isBusy()) { toast("VPNJantit is already working on it"); return }
+    if (!Settings.canDrawOverlays(this)) { askOverlay(); return }
     val names = VpnJantit.SERVERS.map { it.label }.toTypedArray()
     android.app.AlertDialog.Builder(this).setTitle("Choose a server")
       .setItems(names) { _, i ->
-        vjBusy = true; vjRole = ""; vjSrv = VpnJantit.SERVERS[i].code
-        startActivityForResult(Intent(this, VpnJantitActivity::class.java).putExtra(VpnJantit.EXTRA_SERVER, vjSrv), VpnJantit.REQ_CODE)
+        save()
+        val r = VjManager.launch(this, "", VpnJantit.SERVERS[i].code)
+        if (r == "perm") askOverlay() else if (r == "fail") toast("Could not start the account creator")
+        refresh()
       }.show()
-  }
-
-  private fun fillAcc(a: Acc, ns: String, pub: String, u: String, p: String, role: String, srv: String, exp: Long, resetTunnels: Boolean) {
-    a.ns.setText(ns); a.pk.setText(pub); a.us.setText(u); a.pw.setText(p)
-    if (a.dns.text.isNullOrBlank()) a.dns.setText("8.8.8.8")
-    rev = true; a.sw.isChecked = true; rev = false
-    if (resetTunnels) a.n.setSelection(0)
-    a.role = role; a.srv = srv; a.exp = exp
-  }
-
-  private fun onVpnJantitResult(c: Int, d: Intent?) {
-    vjBusy = false
-    val role = vjRole; vjRole = ""
-    val srv = vjSrv
-    val err = d?.getStringExtra(VpnJantit.R_ERROR)
-    if (!err.isNullOrBlank()) {
-      if (Regex("full", RegexOption.IGNORE_CASE).containsMatchIn(err)) {
-        P.edit().putLong("vjfull_$srv", nextReset()).apply()
-        toast("$srv is full, trying another server")
-        if (role.isNotEmpty() && vjTries++ < 5) vjStart(role) else vjTries = 0
-        return
-      }
-      vjTries = 0
-      toast("VPNJantit: $err")
-      val retry = d?.getLongExtra(VpnJantit.R_RETRY_MS, 0L) ?: 0L
-      if (role.isNotEmpty()) { if (retry > 0) vjSchedule(role, retry) else vjHold = System.currentTimeMillis() + 10 * 60_000L }
-      return
-    }
-    if (c != RESULT_OK || d == null) { vjHold = System.currentTimeMillis() + 10 * 60_000L; return }
-    vjTries = 0
-    val u = d.getStringExtra(VpnJantit.R_USER).orEmpty()
-    val p = d.getStringExtra(VpnJantit.R_PASS).orEmpty()
-    val pub = d.getStringExtra(VpnJantit.R_PUBKEY).orEmpty()
-    val ns = d.getStringExtra(VpnJantit.R_NS).orEmpty().ifBlank { "ns-$srv.vpnjantit.com" }
-    val exp = d.getLongExtra(VpnJantit.R_EXPIRES, 0L)
-    if (u.isBlank() || p.isBlank() || pub.isBlank()) { toast("The account details came back incomplete"); vjHold = System.currentTimeMillis() + 10 * 60_000L; return }
-
-    val old = if (role.isNotEmpty()) roleAcc(role) else null
-    val blank = accs.lastOrNull()?.takeIf { a -> a.role.isBlank() && listOf(a.ns, a.pk, a.us, a.pw, a.dns).all { it.text.isNullOrBlank() } }
-    val target = old ?: blank
-    if (target != null) fillAcc(target, ns, pub, u, p, role, srv, exp, old == null)
-    else addCard(JSONObject().put("ns", ns).put("pk", pub).put("u", u).put("p", p).put("d", "8.8.8.8").put("n", 1).put("on", true)
-      .put("role", role).put("srv", srv).put("exp", exp))
-    P.edit().putLong("vj_last", System.currentTimeMillis()).apply()
-    save(); renumber(); VjReceiver.schedule(this)
-    val e = if (exp > 0) "\nExpires: " + java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.US).format(java.util.Date(exp)) else ""
-    toast((if (role.isNotEmpty()) role.uppercase() + " " else "") + "account created ($srv): $u$e")
-
-    if (VpnSvc.running) {
-      toast("Restarting the VPN to load the new account")
-      pending = false; pendingT = System.currentTimeMillis()
-      startService(Intent(this, VpnSvc::class.java).setAction("stop"))
-      vh.postDelayed({ if (!VpnSvc.running) start() }, 3500)
-    }
-    if (role.isNotEmpty()) vjNeeded()?.let { vjSchedule(it, VpnJantit.COOLDOWN_MS) }
   }
 }

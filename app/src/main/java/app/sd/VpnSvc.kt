@@ -2,6 +2,8 @@ package app.sd
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.graphics.drawable.Icon
 import android.content.Intent
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
@@ -62,22 +64,37 @@ class VpnSvc : VpnService() {
     return resolver(list[i])
   }
 
-  private fun notif(t: String): Notification =
-    Notification.Builder(this, "v").setContentTitle("Mollad DNS").setContentText(t)
-      .setSmallIcon(android.R.drawable.ic_lock_lock).setOngoing(true).build()
+  private fun notif(t: String): Notification {
+    val stopPi = PendingIntent.getService(this, 3, Intent(this, VpnSvc::class.java).setAction("stop"),
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    val act = Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "Disconnect", stopPi).build()
+    return Notification.Builder(this, Notif.CH_VPN).setContentTitle("Mollad DNS").setContentText(t)
+      .setSmallIcon(android.R.drawable.ic_lock_lock).setOngoing(true).setContentIntent(Notif.open(this)).addAction(act).build()
+  }
+
+  // The DNS server the tunnel forwards phone DNS queries to (setting "fdns", default 1.1.1.1)
+  private fun fdns(): String {
+    val v = (getSharedPreferences("a", 0).getString("fdns", "1.1.1.1") ?: "1.1.1.1").trim()
+    return if (Regex("^\\d{1,3}(\\.\\d{1,3}){3}\$").matches(v)) v else "1.1.1.1"
+  }
 
   override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
-    LogBus.setup(filesDir)
-    getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("v", "VPN", NotificationManager.IMPORTANCE_LOW))
+    LogBus.setup(filesDir); LogBus.configure(getSharedPreferences("a", 0))
+    Notif.channels(this)
     try { startForeground(1, notif(if (i?.action == "stop") "Stopping..." else "Connecting...")) } catch (e: Throwable) { LogBus.add("notification/foreground error: ${e.message}") }
     // The system restarted the service (null intent) -> do not start by ourselves, otherwise a crash turns into a loop
     if (i == null) { try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) {}; stopSelf(); return START_NOT_STICKY }
     if (i?.action == "stop") { stop(); try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) {}; stopSelf(); return START_NOT_STICKY }
+    // "restart": reload the accounts (for example after a new VPNJantit account) without leaving the foreground state
+    if (i?.action == "restart") {
+      if (on.get()) { LogBus.add("VPN restart"); stop() }
+      else { try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) {}; stopSelf(); return START_NOT_STICKY }
+    }
     if (on.compareAndSet(false, true)) {
       stopped.set(false)
       running = true; inst = this
       LogBus.add("VPN service start")
-      LogBus.add("android " + android.os.Build.VERSION.SDK_INT + " | abi: " + android.os.Build.SUPPORTED_ABIS.joinToString() + " | libs: " + (File(applicationInfo.nativeLibraryDir).list()?.joinToString() ?: "EMPTY"))
+      LogBus.dbg("android " + android.os.Build.VERSION.SDK_INT + " | abi: " + android.os.Build.SUPPORTED_ABIS.joinToString() + " | libs: " + (File(applicationInfo.nativeLibraryDir).list()?.joinToString() ?: "EMPTY"))
       wl = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sd:w").also { it.acquire() }
       val g = gen.incrementAndGet(); pool = Executors.newCachedThreadPool()
       thread { try { begin(g) } catch (e: Throwable) { LogBus.add("start error: ${e.message}"); stop(); try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (x: Exception) {}; stopSelf() } }
@@ -98,7 +115,7 @@ class VpnSvc : VpnService() {
       while (alive(g)) {
         nap(5000, g)
         val s = qSent.get(); val gt = qGot.get(); val ds = s - ls; val dg = gt - lg; ls = s; lg = gt
-        if (ds > 0) LogBus.add("DNS: ${ds / 5} queries/s sent, ${dg / 5} replies/s received (${dg * 100 / ds}%)")
+        if (ds > 0) LogBus.dbg("DNS: ${ds / 5} queries/s sent, ${dg / 5} replies/s received (${dg * 100 / ds}%)")
       }
     }
     val arr = try { JSONArray(getSharedPreferences("a", 0).getString("acc2", "[]")) } catch (e: Exception) { JSONArray() }
@@ -121,7 +138,7 @@ class VpnSvc : VpnService() {
     if (t == 0) { LogBus.add("No account is turned ON"); stop(); stopSelf(); return }
     ss = bindSocks(getSharedPreferences("a", 0).getInt("sport", 3000))
     socksPort = ss!!.localPort
-    LogBus.add("SOCKS port: $socksPort")
+    LogBus.dbg("SOCKS port: $socksPort")
     thread { while (alive(g)) { try { val c = ss!!.accept(); pool.execute { try { handle(c) } catch (e: Exception) { c.close() } } } catch (e: Exception) { break } } }
     // tunnels start one after another (no burst of load on CPU/resolver)
     if (rot) { LogBus.add("Account rotation ON: ${accl.size} accounts, switching every ${getSharedPreferences("a", 0).getInt("rint", 5)} sec"); thread { try { rotate(accl, g) } catch (e: Throwable) { LogBus.add("rotate error: ${e.message}") } } }
@@ -137,17 +154,31 @@ class VpnSvc : VpnService() {
     synchronized(NATIVE) {
       if (!alive(g)) return
       val mtu = getSharedPreferences("a", 0).getInt("mtu", 1500).coerceIn(576, 1500)
-      val b = Builder().setSession("Mollad DNS").addAddress("10.10.0.2", 32).addRoute("0.0.0.0", 0).addDnsServer("1.1.1.1").setMtu(mtu)
-      try { b.addDisallowedApplication(packageName) } catch (e: Exception) {}
-      LogBus.add("VPN establish...")
+      val b = Builder().setSession("Mollad DNS").addAddress("10.10.0.2", 32).addRoute("0.0.0.0", 0).addDnsServer(fdns()).setMtu(mtu)
+      LogBus.dbg("Forward DNS: ${fdns()}")
+      // App filter: 0 = all apps, 1 = only the chosen apps, 2 = all apps except the chosen ones
+      val pr0 = getSharedPreferences("a", 0)
+      val fmode = pr0.getInt("appf_mode", 0)
+      val flist = (pr0.getString("appf_list", "") ?: "").split(",").map { it.trim() }.filter { it.isNotEmpty() && it != packageName }
+      var allowed = 0
+      if (fmode == 1 && flist.isNotEmpty()) {
+        for (pk in flist) { try { b.addAllowedApplication(pk); allowed++ } catch (e: Exception) {} }
+        LogBus.add("App filter: only $allowed app(s) use the VPN")
+      }
+      if (allowed == 0) {
+        // (an "only these apps" list cannot be mixed with an "except these apps" list)
+        if (fmode == 2) { for (pk in flist) { try { b.addDisallowedApplication(pk) } catch (e: Exception) {} }; LogBus.add("App filter: ${flist.size} app(s) bypass the VPN") }
+        try { b.addDisallowedApplication(packageName) } catch (e: Exception) {}
+      }
+      LogBus.dbg("VPN establish...")
       val t2 = b.establish()
       if (t2 == null) { LogBus.add("VPN permission/establish fail"); return }
       tun = t2
       val cfg = File(filesDir, "h.yml")
       cfg.writeText("tunnel:\n  mtu: $mtu\n  ipv4: 10.10.0.2\nsocks5:\n  port: $socksPort\n  address: 127.0.0.1\n  udp: 'udp'\n")
-      LogBus.add("hev start (fd=${t2.fd})...")
+      LogBus.dbg("hev start (fd=${t2.fd})...")
       TProxyService.TProxyStartService(cfg.path, t2.fd); hevOn = true
-      LogBus.add("hev start OK")
+      LogBus.dbg("hev start OK")
     }
   }
 
@@ -187,7 +218,7 @@ class VpnSvc : VpnService() {
   private fun bindSocks(pref: Int): ServerSocket {
     val lo = InetAddress.getByName("127.0.0.1")
     try { return ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(lo, pref), 50) } } catch (e: Exception) {}
-    LogBus.add("SOCKS port $pref is busy - picking a free port")
+    LogBus.dbg("SOCKS port $pref is busy - picking a free port")
     return ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(lo, 0), 50) }
   }
 
@@ -195,7 +226,7 @@ class VpnSvc : VpnService() {
   private fun probe(s: Session, ms: Int): Boolean {
     return try {
       val ch = s.openChannel("direct-tcpip") as ChannelDirectTCPIP
-      ch.setHost("1.1.1.1"); ch.setPort(53)
+      ch.setHost(fdns()); ch.setPort(53)
       ch.inputStream
       ch.connect(ms)
       ch.disconnect(); true
@@ -214,7 +245,7 @@ class VpnSvc : VpnService() {
     val qps = pr.getInt("qps", 0).coerceIn(0, 5000)
     val target = if (qps > 0) "127.0.0.1:" + relayFor(rs, g) else rs
     val t0 = System.currentTimeMillis()
-    LogBus.add("[$label] dnstt start | domain=$ns | dns-target=$target | local-port=$port | payload=$pay" +
+    LogBus.dbg("[$label] dnstt start | domain=$ns | dns-target=$target | local-port=$port | payload=$pay" +
       (if (dmtu > 0) " | dnstt-mtu=$dmtu" else "") +
       " | low-load=${pr.getBoolean("low", false)}" + (if (qps > 0) " | relay-qps-limit=$qps" else "") + " | timeout=${to / 1000}s")
     val args = mutableListOf(bin.path, "-udp", target, "-pubkey", pub)
@@ -230,7 +261,7 @@ class VpnSvc : VpnService() {
       val tDnstt = System.currentTimeMillis() - t0
       if (!alive(g)) throw Exception("stop")
       if (!p.isAlive) throw Exception("dnstt process exited immediately (after ${tDnstt}ms) - possible binary/arch or dns-target issue")
-      LogBus.add("[$label] dnstt process up (${tDnstt}ms) - starting SSH handshake via dns-target=$target...")
+      LogBus.dbg("[$label] dnstt process up (${tDnstt}ms) - starting SSH handshake via dns-target=$target...")
       val tSsh0 = System.currentTimeMillis()
       val x = JSch().getSession(user, "127.0.0.1", port)
       s = x
@@ -239,7 +270,7 @@ class VpnSvc : VpnService() {
       x.setServerAliveInterval(30000); x.setServerAliveCountMax(8)
       x.connect(to)
       val tSsh = System.currentTimeMillis() - tSsh0
-      LogBus.add("[$label] SSH auth OK (${tSsh}ms) | total connect ${System.currentTimeMillis() - t0}ms | user=$user")
+      LogBus.dbg("[$label] SSH auth OK (${tSsh}ms) | total connect ${System.currentTimeMillis() - t0}ms | user=$user")
       return Link(p, x)
     } catch (e: Exception) {
       val tTotal = System.currentTimeMillis() - t0
@@ -252,7 +283,7 @@ class VpnSvc : VpnService() {
         msg.contains("refused", true) -> "CONNECTION REFUSED - the server/port may be wrong"
         else -> "ERROR - $msg"
       }
-      LogBus.add("[$label] CONNECT FAIL (${tTotal}ms) | dns-target=$target | domain=$ns | $reason")
+      if (LogBus.debug) LogBus.add("[$label] CONNECT FAIL (${tTotal}ms) | dns-target=$target | domain=$ns | $reason") else LogBus.add("[$label] connect failed: ${reason.substringBefore(" - ")}")
       try { s?.disconnect() } catch (z: Exception) {}
       p.destroy(); procs.remove(p)
       throw e
@@ -317,7 +348,7 @@ class VpnSvc : VpnService() {
           } catch (e: Exception) { if (lsock.isClosed) break }
         }
       }
-      LogBus.add("UDP relay: 127.0.0.1:${lsock.localPort} -> $rs")
+      LogBus.dbg("UDP relay: 127.0.0.1:${lsock.localPort} -> $rs")
       relayPorts[rs] = lsock.localPort
       return lsock.localPort
     }
@@ -415,9 +446,9 @@ class VpnSvc : VpnService() {
         try {
           val n = openLink(ns, pub, user, pass, rs, pref, label, g)
           reg(n); cur = n; wait = 3000L; miss = 0; linkSince = System.currentTimeMillis()
-          LogBus.add("[$label] connected | resolver=$rs")
+          if (LogBus.debug) LogBus.add("[$label] connected | resolver=$rs") else LogBus.add("[$label] connected")
         } catch (e: Exception) {
-          if (alive(g)) LogBus.add("[$label] fail: ${e.message} - retrying in ${wait / 1000}s")
+          if (alive(g)) LogBus.add(if (LogBus.debug) "[$label] fail: ${e.message} - retrying in ${wait / 1000}s" else "[$label] retrying in ${wait / 1000}s")
           nap(wait, g); wait = (wait * 2).coerceAtMost(maxMs)
         }
         continue
@@ -514,7 +545,7 @@ class VpnSvc : VpnService() {
     val s = acquire() ?: throw Exception()
     try {
       val ch = s.openChannel("direct-tcpip") as ChannelDirectTCPIP
-      ch.setHost("1.1.1.1"); ch.setPort(53)
+      ch.setHost(fdns()); ch.setPort(53)
       val inp = DataInputStream(ch.inputStream); val out = ch.outputStream
       ch.connect(10000)
       out.write(byteArrayOf((q.size shr 8).toByte(), q.size.toByte()) + q); out.flush()
