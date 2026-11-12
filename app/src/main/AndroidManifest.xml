@@ -14,7 +14,7 @@
       <category android:name="android.intent.category.LAUNCHER"/>
     </intent>
   </queries>
-  <application android:label="Mollad DNS" android:icon="@mipmap/ic_dark" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+  <application android:label="Mollad DNS" android:icon="@mipmap/ic_light" android:roundIcon="@mipmap/ic_light" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
     <activity android:name=".MainActivity" android:exported="false" android:label="Mollad DNS"/>
     <activity-alias android:name=".DarkAlias" android:targetActivity=".MainActivity" android:exported="true" android:enabled="true" android:label="Mollad DNS" android:icon="@mipmap/ic_dark">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>

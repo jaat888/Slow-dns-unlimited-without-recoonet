@@ -5,8 +5,14 @@ import android.app.Activity
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
+import android.webkit.CookieManager
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.net.HttpURLConnection
@@ -33,6 +39,49 @@ object VjSite {
     /** Shown when the site cannot be read at all. */
     val FALLBACK_COUNTRIES = listOf(VjCountry("india", "India"))
 
+    /** Why the last read failed (shown in the dialog so it is easy to report). */
+    @Volatile var lastErr = ""
+
+    /** Built-in list (from the site's "SSH by Location" page) so the country list is never empty. Live list replaces it. */
+    private val BUILTIN = listOf(
+        "Armenia", "Azerbaijan", "Bahrain", "Bangladesh", "Cambodia", "China", "Hong Kong", "India", "Indonesia", "Israel", "Japan",
+        "Kazakhstan", "Malaysia", "Pakistan", "Philippines", "Saudi Arabia", "Singapore", "South Korea", "Thailand", "Turkey",
+        "United Arab Emirates", "Vietnam", "Austria", "Belgium", "Bulgaria", "Czech Republic", "Denmark", "Estonia", "Finland",
+        "France", "Germany", "Greece", "Hungary", "Ireland", "Italy", "Latvia", "Lithuania", "Luxembourg", "Moldova", "Netherlands",
+        "Poland", "Portugal", "Romania", "Russia", "Slovakia", "Spain", "Sweden", "Switzerland", "Ukraine", "United Kingdom",
+        "Argentina", "Brazil", "Canada", "Chile", "Mexico", "United States", "South Africa", "Australia"
+    )
+
+    private fun indiaFirst(l: List<VjCountry>): List<VjCountry> =
+        l.filter { it.slug == "india" } + l.filter { it.slug != "india" }.sortedBy { it.name }
+
+    fun builtinCountries(): List<VjCountry> = indiaFirst(BUILTIN.map { VjCountry(it.lowercase().replace(' ', '-'), it) })
+
+    /** Last country list read live from the site, else the built-in one. */
+    fun savedCountries(p: SharedPreferences): List<VjCountry> {
+        val raw = p.getString("vj_countries", "") ?: ""
+        val l = raw.split(',').filter { it.isNotBlank() }.map { VjCountry(it, nameOf(it)) }
+        return if (l.size >= 5) indiaFirst(l) else builtinCountries()
+    }
+
+    fun saveCountries(p: SharedPreferences, l: List<VjCountry>) {
+        if (l.size >= 5) p.edit().putString("vj_countries", l.joinToString(",") { it.slug }).apply()
+    }
+
+    fun saveServers(p: SharedPreferences, slug: String, l: List<VjSrv>) {
+        try {
+            val a = JSONArray()
+            for (s in l) a.put(JSONObject().put("c", s.code).put("t", s.title).put("l", s.location).put("d", s.days))
+            p.edit().putString("vj_srv_$slug", a.toString()).apply()
+        } catch (e: Throwable) { }
+    }
+
+    /** Servers last seen for this country; status is \"unknown\" because it is not live. */
+    fun savedServers(p: SharedPreferences, slug: String): List<VjSrv> = try {
+        val a = JSONArray(p.getString("vj_srv_$slug", "[]") ?: "[]")
+        (0 until a.length()).map { val o = a.getJSONObject(it); VjSrv(o.getString("c"), o.getString("t"), o.optString("l"), "unknown", o.optInt("d"), true) }
+    } catch (e: Throwable) { emptyList() }
+
     private val NOT_COUNTRY = setOf("account", "server-status", "port-443", "port-80", "stunnel", "with-stunnel")
     private val ui = Handler(Looper.getMainLooper())
 
@@ -53,18 +102,28 @@ object VjSite {
     }
 
     private fun httpGet(url: String, marker: String): String? {
+        val alt = if (url.contains("://www.")) url.replace("://www.", "://") else url.replace("://", "://www.")
+        for (u in listOf(url, alt)) {
+            val r = httpGetOne(u, marker)
+            if (r != null) return r
+        }
+        return null
+    }
+
+    private fun httpGetOne(url: String, marker: String): String? {
         return try {
             val c = URL(url).openConnection() as HttpURLConnection
             c.connectTimeout = 10_000; c.readTimeout = 12_000; c.instanceFollowRedirects = true
             c.setRequestProperty("User-Agent", UA)
             c.setRequestProperty("Accept", "text/html,application/xhtml+xml")
             c.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
-            if (c.responseCode != 200) { LogBus.dbg("VPNJantit site: HTTP ${c.responseCode} for $url"); c.disconnect(); return null }
+            if (c.responseCode != 200) { lastErr = "HTTP ${c.responseCode}"; LogBus.dbg("VPNJantit site: HTTP ${c.responseCode} for $url"); c.disconnect(); return null }
             val s = c.inputStream.bufferedReader().use { it.readText() }
             c.disconnect()
-            if (s.contains(marker, true)) s else { LogBus.dbg("VPNJantit site: page has no '$marker' (Cloudflare?)"); null }
+            if (s.contains(marker, true)) s else { lastErr = "page blocked (Cloudflare?)"; LogBus.dbg("VPNJantit site: page has no '$marker' (Cloudflare?)"); null }
         } catch (e: Throwable) {
-            LogBus.dbg("VPNJantit site: ${e.javaClass.simpleName} ${e.message}")
+            lastErr = "${e.javaClass.simpleName} ${e.message ?: ""}".trim()
+            LogBus.dbg("VPNJantit site: $lastErr")
             null
         }
     }
@@ -72,24 +131,40 @@ object VjSite {
     @SuppressLint("SetJavaScriptEnabled")
     private fun webGet(a: Activity, url: String, marker: String, cb: (String?) -> Unit) {
         var finished = false
-        val w = try { WebView(a) } catch (e: Throwable) { cb(null); return }
+        val w = try { WebView(a) } catch (e: Throwable) { lastErr = "WebView missing"; cb(null); return }
+        val root = try { a.findViewById<android.view.ViewGroup>(android.R.id.content) } catch (e: Throwable) { null }
         fun done(r: String?) {
             if (finished) return
             finished = true
+            try { root?.removeView(w) } catch (e: Throwable) { }
             try { w.stopLoading(); w.destroy() } catch (e: Throwable) { }
             cb(r)
         }
         try {
             w.settings.javaScriptEnabled = true
+            w.settings.domStorageEnabled = true      // Cloudflare's check needs this
+            w.settings.useWideViewPort = true
             w.settings.userAgentString = UA
-            w.webViewClient = WebViewClient()
+            try { CookieManager.getInstance().setAcceptCookie(true); CookieManager.getInstance().setAcceptThirdPartyCookies(w, true) } catch (e: Throwable) { }
+            w.webViewClient = object : WebViewClient() {
+                override fun onReceivedError(v: WebView, r: WebResourceRequest, e: WebResourceError) {
+                    if (r.isForMainFrame) { lastErr = "WebView: ${e.description}"; LogBus.dbg("VPNJantit site: $lastErr") }
+                }
+                override fun onReceivedHttpError(v: WebView, r: WebResourceRequest, e: WebResourceResponse) {
+                    if (r.isForMainFrame) LogBus.dbg("VPNJantit site: WebView HTTP ${e.statusCode}")
+                }
+            }
+            // A WebView that is not on screen is paused by Android and the Cloudflare check never finishes, so it sits in the layout as a tiny, nearly invisible view.
+            w.alpha = 0.01f
+            root?.addView(w, FrameLayout.LayoutParams(2, 2))
             w.loadUrl(url)
-        } catch (e: Throwable) { done(null); return }
+        } catch (e: Throwable) { lastErr = "WebView ${e.javaClass.simpleName}"; done(null); return }
         val t0 = System.currentTimeMillis()
         val poll = object : Runnable {
             override fun run() {
                 if (finished) return
-                if (a.isFinishing || System.currentTimeMillis() - t0 > 25_000L) { done(null); return }
+                if (a.isFinishing) { done(null); return }
+                if (System.currentTimeMillis() - t0 > 40_000L) { if (lastErr.isBlank()) lastErr = "timeout (Cloudflare check did not finish)"; done(null); return }
                 try {
                     w.evaluateJavascript("document.documentElement.outerHTML") { raw ->
                         val s = try { JSONTokener(raw ?: "").nextValue() as? String } catch (e: Throwable) { null }
@@ -110,7 +185,7 @@ object VjSite {
             .replace(Regex("\\s+"), " ").trim()
 
     /** "united-states" -> "United States" */
-    private fun nameOf(slug: String) = slug.split('-').joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
+    fun nameOf(slug: String) = slug.split('-').joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
 
     fun parseCountries(html: String): List<VjCountry> {
         val re = Regex("href=[\"'](?:https?://www\\.vpnjantit\\.com)?/free-ssh-([a-z][a-z\\-]*)[\"']", RegexOption.IGNORE_CASE)

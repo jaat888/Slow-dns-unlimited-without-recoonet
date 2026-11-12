@@ -763,6 +763,10 @@ class MainActivity : Activity() {
     val col = pageCol()
     head(col, "Settings", "Changes save automatically")
 
+    val s0 = card(14); s0.addView(secTitle("DNS finder"))
+    tapRow(s0, "Find the best DNS", "Tests public DNS servers and shows which ones answer and how fast (ping). UDP, DoT and DoH each have their own list. Tap Test all, then tap a DNS to use it or add it to your resolver list. Big list downloads thousands of public resolvers (up to 2000) and shows the ones that are online.", tv("UDP · DoT · DoH", 13f, acc, true)) { showDnsFinder() }
+    col.addView(s0)
+
     val s6 = card(14); s6.addView(secTitle("Network and apps"))
     fdnsVal = tv("", 13f, acc, true); appfVal = tv("", 13f, acc, true)
     tapRow(s6, "Forward DNS", "The DNS server your phone's DNS questions are sent to, through the tunnel. Pick Cloudflare, Google, Quad9, AdGuard or OpenDNS, or type your own IPv4 address. If sites do not open, try another one. Applies at next START.", fdnsVal) { pickForwardDns() }
@@ -791,6 +795,7 @@ class MainActivity : Activity() {
 
     val s3 = card(); s3.addView(secTitle("Resolvers and rotation"))
     val trVal = tv(trName(), 13f, acc, true)
+    trValTv = trVal
     tapRow(s3, "DNS transport", "How dnstt reaches the resolver. UDP: plain DNS on port 53, fastest. DoT: DNS inside TLS on port 853 (put the resolver as dns.google or 8.8.8.8, port 853 is added). DoH: DNS inside HTTPS on port 443 (put dns.google or a full link like https://dns.google/dns-query). DoT and DoH are harder to block but a little slower. The QPS limit works with UDP only. Applies at next START.", trVal) {
       val (dlg, box) = sheet()
       box.addView(tv("DNS transport", 17f, fg, true))
@@ -810,6 +815,7 @@ class MainActivity : Activity() {
     helpNotes.add("Resolver rotation" to "Comma-separated public resolvers (e.g. 8.8.8.8,1.1.1.1,9.9.9.9). Each new or reconnecting tunnel takes the next one in turn, so one resolver is rate-limited less. Leave empty to use only each account's own DNS. If your network only allows one fixed resolver, list just that one. Applies at next connect.")
     s3.addView(settingLabel("Resolver rotation").apply { layoutParams = lp(12) })
     val resE = et("8.8.8.8,1.1.1.1,9.9.9.9", P.getString("resolvers", "") ?: "")
+    resEdit = resE
     resE.setOnFocusChangeListener { _, f -> if (!f) P.edit().putString("resolvers", resE.text.toString().trim()).apply() }
     settingCommits.add { P.edit().putString("resolvers", resE.text.toString().trim()).apply() }
     s3.addView(resE)
@@ -1017,9 +1023,10 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     setHero(state)
     heroBtn.isEnabled = pending == null
     statePill.text = when (state) { 2 -> "Connected"; 1 -> "Connecting..."; 3 -> "Disconnecting..."; else -> "Disconnected" }
-    hdrChip.text = when (state) { 2 -> "●  Online"; 1 -> "●  Connecting"; 3 -> "●  Closing"; else -> "●  Offline" }
-    hdrChip.setTextColor(when (state) { 2 -> 0xFF10B981.toInt(); 1, 3 -> 0xFFF59E0B.toInt(); else -> sub })
-    hdrChip.background = rr(if (state == 2) tintBg(0xFF10B981.toInt(), 0x26) else fieldC, 20)
+    chipState = state
+    if (state != 2) { pingMs = -1; pingFails = 0 }
+    paintChip()
+    if (state == 2) pingTick()
     statusTv.text = when (state) { 2 -> "You are online"; 1 -> "Getting tunnels ready"; 3 -> "Closing tunnels"; else -> "Ready when you are" }
     VjManager.tick(this)
     if (::trafV.isInitialized && trafV.visibility == View.VISIBLE && (++trafTick % 3 == 0)) updateTraffic()
@@ -1212,6 +1219,273 @@ The Connect button at the bottom connects or disconnects. In the card you see up
           P.edit().putString("fdns", v).apply(); updateSettingSummaries(); toast("Forward DNS: $v (applies at next START)")
         } else toast("Please type an IPv4 address like 9.9.9.11")
       }.setNegativeButton("Cancel", null).show()
+  }
+
+  // ---------- Home ping chip ----------
+  private var chipState = 0
+  private var pingMs = -1
+  private var pingFails = 0
+  private var pingT = 0L
+  private var pingBusy = false
+
+  /** Top-right chip: Offline / Connecting / Closing, and while online the live ping through the tunnel (ms). */
+  private fun paintChip() {
+    val good = 0xFF10B981.toInt()
+    hdrChip.text = when (chipState) {
+      2 -> if (pingMs > 0) "●  $pingMs ms" else if (pingMs == -2) "●  No reply" else "●  Online"
+      1 -> "●  Connecting"; 3 -> "●  Closing"; else -> "●  Offline"
+    }
+    val c = when (chipState) {
+      2 -> if (pingMs == -2 || pingMs > 600) red else if (pingMs > 250) amber else good
+      1, 3 -> amber
+      else -> sub
+    }
+    hdrChip.setTextColor(c)
+    hdrChip.background = rr(if (chipState == 2 || chipState == 1 || chipState == 3) tintBg(c, 0x26) else fieldC, 20)
+  }
+
+  /** Measures the real tunnel ping every few seconds (a DNS question sent through the app's SOCKS port). */
+  private fun pingTick() {
+    val now = System.currentTimeMillis()
+    if (pingBusy || now - pingT < 4000L) return
+    val port = VpnSvc.socksPortPub
+    if (port <= 0) return
+    pingBusy = true; pingT = now
+    val dns = (P.getString("fdns", "1.1.1.1") ?: "1.1.1.1").trim().ifBlank { "1.1.1.1" }
+    Thread {
+      val ms = DnsCheck.tunnel(port, dns, 3000)
+      h.post {
+        pingBusy = false
+        if (ms > 0) { pingMs = ms; pingFails = 0 } else { pingFails++; if (pingFails >= 2) pingMs = -2 }
+        if (chipState == 2) paintChip()
+      }
+    }.start()
+  }
+
+  // ---------- DNS finder ----------
+  private var resEdit: EditText? = null
+  private var trValTv: TextView? = null
+
+  /** Puts a resolver into the settings: sets the transport and the rotation list (replace = only this one). */
+  private fun applyResolver(type: String, addr: String, replace: Boolean) {
+    val curTr = P.getString("tr", "udp") ?: "udp"
+    val cur = (P.getString("resolvers", "") ?: "").split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    val list = if (replace || curTr != type) listOf(addr) else (cur + addr).distinct()
+    val v = list.joinToString(",")
+    P.edit().putString("tr", type).putString("resolvers", v).apply()
+    resEdit?.setText(v); trValTv?.text = trName()
+    toast(if (replace || curTr != type) "Resolver: $addr  (${type.uppercase()}, next START)" else "Added. ${list.size} resolvers in the list (next START)")
+  }
+
+  private fun msColor(ms: Int) = when {
+    ms <= 0 -> sub
+    ms < 80 -> 0xFF10B981.toInt()
+    ms < 200 -> 0xFF84CC16.toInt()
+    ms < 450 -> amber
+    else -> red
+  }
+
+  private class DnsRowH(val root: LinearLayout, val dot: View, val name: TextView, val addr: TextView, val chip: TextView)
+
+  private fun showDnsFinder() {
+    val dlg = android.app.Dialog(this)
+    dlg.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    val box = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL; background = rr(bg, 26, strokeC); setPadding(dp(14), dp(16), dp(14), dp(12))
+    }
+    dlg.setContentView(box)
+    dlg.window?.apply {
+      setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
+      setLayout((resources.displayMetrics.widthPixels * 0.96f).toInt(), (resources.displayMetrics.heightPixels * 0.88f).toInt())
+      setGravity(Gravity.CENTER); setDimAmount(0.5f)
+    }
+    val lists = linkedMapOf("udp" to ArrayList(DnsCheck.build("udp")), "dot" to ArrayList(DnsCheck.build("dot")), "doh" to ArrayList(DnsCheck.build("doh")))
+    var tab = "udp"
+    var onlyOn = false
+    var running = false
+    var shown: List<DnsItem> = emptyList()
+    var stop = java.util.concurrent.atomic.AtomicBoolean(false)
+    val good = 0xFF10B981.toInt()
+
+    // header
+    box.addView(row(
+      LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        addView(tv("DNS finder", 21f, fg, true)); addView(tv("Which public DNS answers, and how fast", 12f, sub))
+      },
+      tv("Close", 14f, acc, true).apply { setPadding(dp(10), dp(6), dp(4), dp(6)); setOnClickListener { dlg.dismiss() } }
+    ).apply { gravity = Gravity.CENTER_VERTICAL })
+
+    // tabs
+    val tabViews = LinkedHashMap<String, TextView>()
+    val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = lp(12) }
+    for ((k, t) in listOf("udp" to "UDP", "dot" to "DoT", "doh" to "DoH")) {
+      val v = tv(t, 14f, fg, true).apply {
+        gravity = Gravity.CENTER
+        layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { setMargins(dp(3), 0, dp(3), 0) }
+      }
+      tabViews[k] = v; tabRow.addView(v)
+    }
+    box.addView(tabRow)
+
+    // summary card
+    val stat = tv("", 14f, fg, true)
+    val stat2 = tv("", 12f, sub).apply { layoutParams = lp(2) }
+    val bar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+      layoutParams = LinearLayout.LayoutParams(-1, dp(6)).apply { topMargin = dp(10) }
+      progressTintList = ColorStateList.valueOf(acc); progressBackgroundTintList = ColorStateList.valueOf(fieldC)
+    }
+    box.addView(LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL; background = rr(cardC, 18, strokeC); elevation = dp(1).toFloat()
+      setPadding(dp(14), dp(12), dp(14), dp(12)); layoutParams = lp(10)
+      addView(stat); addView(stat2); addView(bar)
+    })
+
+    // buttons
+    val testB = pill("Test all", acc, ink) { }
+    val stopB = pill("Stop", fieldC, fg) { }
+    val bigB = pill("Big list", fieldC, fg) { }
+    box.addView(row(testB, stopB, bigB))
+    val filterB = tv("Showing: all", 12.5f, acc, true).apply {
+      gravity = Gravity.CENTER; background = rr(tintBg(acc, 0x1A), 12); setPadding(dp(12), dp(7), dp(12), dp(7))
+      layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10); gravity = Gravity.END }
+    }
+    box.addView(filterB)
+
+    // list
+    val lv = android.widget.ListView(this).apply {
+      divider = null; dividerHeight = 0; selector = android.graphics.drawable.ColorDrawable(0); isVerticalScrollBarEnabled = false
+      layoutParams = LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(6) }
+    }
+    val adapter = object : android.widget.BaseAdapter() {
+      override fun getCount() = shown.size
+      override fun getItem(p: Int): Any = shown[p]
+      override fun getItemId(p: Int) = p.toLong()
+      override fun getView(p: Int, cv: View?, parent: android.view.ViewGroup?): View {
+        val hd: DnsRowH
+        if (cv == null) {
+          val dot = View(this@MainActivity).apply { layoutParams = LinearLayout.LayoutParams(dp(10), dp(10)).apply { rightMargin = dp(12) } }
+          val name = tv("", 14.5f, fg, true).apply { setSingleLine(); ellipsize = android.text.TextUtils.TruncateAt.END }
+          val addr = tv("", 11.5f, sub).apply { setSingleLine(); ellipsize = android.text.TextUtils.TruncateAt.MIDDLE; layoutParams = lp(1) }
+          val chip = tv("", 12.5f, sub, true).apply { setPadding(dp(10), dp(5), dp(10), dp(5)); minWidth = dp(64); gravity = Gravity.CENTER }
+          val colV = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f); addView(name); addView(addr) }
+          val inner = LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = rr(cardC, 14, strokeC); setPadding(dp(14), dp(11), dp(12), dp(11))
+            addView(dot); addView(colV); addView(chip)
+          }
+          val outer = LinearLayout(this@MainActivity).apply {
+            setPadding(dp(2), dp(3), dp(2), dp(3)); addView(inner, LinearLayout.LayoutParams(-1, -2))
+            layoutParams = android.widget.AbsListView.LayoutParams(-1, -2)
+          }
+          hd = DnsRowH(outer, dot, name, addr, chip); outer.tag = hd
+        } else hd = cv.tag as DnsRowH
+        val d = shown[p]
+        val c = if (d.ms > 0) msColor(d.ms) else if (d.ms == -2) red else sub
+        hd.dot.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(if (d.ms == -1) strokeC else c) }
+        hd.name.text = d.label
+        hd.addr.text = d.addr
+        hd.chip.text = if (d.ms > 0) "${d.ms} ms" else if (d.ms == -2) "No answer" else "Not tested"
+        hd.chip.setTextColor(c)
+        hd.chip.background = rr(if (d.ms == -1) fieldC else tintBg(c, 0x22), 10)
+        hd.root.alpha = if (d.ms == -2) 0.6f else 1f
+        return hd.root
+      }
+    }
+    lv.adapter = adapter
+    box.addView(lv)
+
+    val topB = pill("Use the fastest 5", acc, ink) { }
+    box.addView(row(topB))
+
+    fun order(d: DnsItem) = if (d.ms > 0) d.ms else if (d.ms == -1) 100_000 else 200_000
+
+    fun refreshList() {
+      val all = lists[tab]!!
+      val tested = all.count { it.ms != -1 }
+      val on = all.count { it.ms > 0 }
+      shown = all.filter { !onlyOn || it.ms > 0 }.sortedBy { order(it) }
+      adapter.notifyDataSetChanged()
+      bar.max = maxOf(all.size, 1); bar.progress = tested
+      stat.text = "$on online of ${all.size}" + (if (tested < all.size) "  ·  $tested tested" else "")
+      val best = all.filter { it.ms > 0 }.minByOrNull { it.ms }
+      stat2.text = when {
+        running -> "Testing... a good DNS answers in under 100 ms"
+        best != null -> "Fastest: ${best.label} (${best.addr}) - ${best.ms} ms"
+        tested == 0 -> "Tap Test all to check every DNS in this list"
+        else -> "No DNS answered. Check your internet and test again"
+      }
+      testB.isEnabled = !running; testB.alpha = if (running) 0.5f else 1f
+      stopB.isEnabled = running; stopB.alpha = if (running) 1f else 0.5f
+      bigB.visibility = if (tab == "udp") View.VISIBLE else View.GONE
+      bigB.isEnabled = !running; bigB.alpha = if (running) 0.5f else 1f
+      filterB.text = if (onlyOn) "Showing: online only" else "Showing: all"
+    }
+
+    var pend = false
+    fun softRefresh() { if (!pend) { pend = true; h.postDelayed({ pend = false; if (dlg.isShowing) refreshList() }, 250) } }
+
+    fun runTests(items: List<DnsItem>) {
+      if (running || items.isEmpty()) return
+      items.forEach { it.ms = -1 }
+      running = true; stop = java.util.concurrent.atomic.AtomicBoolean(false)
+      refreshList()
+      DnsCheck.run(items, if (items[0].type == "udp") 48 else 10, stop, { h.post { softRefresh() } }) {
+        h.post { running = false; if (dlg.isShowing) refreshList() }
+      }
+    }
+
+    fun paintTabs() {
+      for ((k, v) in tabViews) { val on = k == tab; v.setTextColor(if (on) ink else fg); v.background = rr(if (on) acc else fieldC, 14) }
+    }
+    for ((k, v) in tabViews) v.setOnClickListener { tab = k; paintTabs(); refreshList() }
+
+    testB.setOnClickListener { runTests(lists[tab]!!) }
+    stopB.setOnClickListener { stop.set(true) }
+    filterB.setOnClickListener { onlyOn = !onlyOn; refreshList() }
+    bigB.setOnClickListener {
+      if (running) return@setOnClickListener
+      running = true; stat2.text = "Downloading a big public list..."; refreshList()
+      Thread {
+        val ips = DnsCheck.downloadList()
+        h.post {
+          running = false
+          val have = lists["udp"]!!.map { it.addr }.toHashSet()
+          val fresh = ips.filter { it !in have }.shuffled().take(2000).map { DnsItem("udp", it, "Public resolver") }
+          if (fresh.isEmpty()) { toast("Could not download the list. Check your internet"); refreshList() }
+          else {
+            lists["udp"]!!.addAll(fresh); onlyOn = true
+            toast("${fresh.size} resolvers added. Testing them now...")
+            runTests(fresh)
+          }
+        }
+      }.start()
+    }
+    topB.setOnClickListener {
+      val best = lists[tab]!!.filter { it.ms > 0 }.sortedBy { it.ms }.take(5)
+      if (best.isEmpty()) { toast("Test first, then pick the fastest"); return@setOnClickListener }
+      val v = best.joinToString(",") { it.addr }
+      P.edit().putString("tr", tab).putString("resolvers", v).apply()
+      resEdit?.setText(v); trValTv?.text = trName()
+      toast("${best.size} fastest ${tab.uppercase()} resolvers saved (next START)")
+    }
+    lv.setOnItemClickListener { _, _, pos, _ ->
+      val d = shown[pos]
+      val (sd, sb) = sheet()
+      sb.addView(tv(d.label, 17f, fg, true))
+      sb.addView(tv(d.addr + (if (d.ms > 0) "   ·   ${d.ms} ms" else ""), 12f, sub).apply { layoutParams = lp(2) })
+      sb.addView(listRow("Use only this", "Sets transport to ${d.type.uppercase()} and uses just this resolver", null) { applyResolver(d.type, d.addr, true); sd.dismiss() })
+      sb.addView(listRow("Add to my resolver list", "Rotation takes it in turn with the others", null) { applyResolver(d.type, d.addr, false); sd.dismiss() })
+      sb.addView(listRow("Copy", "Copies the address", null) {
+        (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("dns", d.addr))
+        toast("Copied"); sd.dismiss()
+      })
+      sb.addView(row(pill("Close", fieldC, fg) { sd.dismiss() }))
+      sd.show()
+    }
+    dlg.setOnDismissListener { stop.set(true) }
+    paintTabs(); refreshList()
+    dlg.show()
   }
 
   // ---------- App filter picker ----------
@@ -1729,7 +2003,8 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     val sc = ScrollView(this).apply { addView(list) }
     box.addView(sc, LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.42f).toInt()).apply { topMargin = dp(8) })
-    var all: List<VjCountry> = VjSite.FALLBACK_COUNTRIES
+    var all: List<VjCountry> = VjSite.savedCountries(P)
+    st.text = "Reading the site... (saved list shown meanwhile)"
     fun render() {
       list.removeAllViews()
       val q = search.text.toString().trim().lowercase()
@@ -1748,8 +2023,8 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     VjSite.fetch(this, VjSite.COUNTRIES_URL, "free-ssh-") { html ->
       if (!dlg.isShowing) return@fetch
       val l = html?.let { VjSite.parseCountries(it) }.orEmpty()
-      if (l.isNotEmpty()) { all = l; st.text = "${l.size} countries - live from vpnjantit.com" }
-      else st.text = "Could not read the site, showing India only."
+      if (l.isNotEmpty()) { all = l; VjSite.saveCountries(P, l); st.text = "${l.size} countries - live from vpnjantit.com" }
+      else st.text = "Could not read the site (${VjSite.lastErr.ifBlank { "no reply" }}). Showing the saved list of ${all.size} countries."
       render()
     }
   }
@@ -1775,11 +2050,16 @@ The Connect button at the bottom connects or disconnects. In the card you see up
         val l = html?.let { VjSite.parseServers(it) }.orEmpty()
         list.removeAllViews()
         if (l.isEmpty()) {
-          st.text = if (html == null) "Could not read the site. Check the internet and press Refresh." else "No free SSH server found for ${c.name}."
-          if (c.slug == "india") for (s in VpnJantit.SERVERS) list.addView(listRow(s.label, "Saved list, status not live", null) { dlg.dismiss(); startCreate(s.code, s.label) })
+          st.text = if (html == null) "Could not read the site (${VjSite.lastErr.ifBlank { "no reply" }}). Press Refresh." else "No free SSH server found for ${c.name} on the site."
+          val old = VjSite.savedServers(P, c.slug)
+          if (old.isNotEmpty()) {
+            st.text = st.text.toString() + " Showing the last saved servers."
+            for (s in old) list.addView(listRow(s.title, (if (s.location.isNotBlank()) s.location + " \u00b7 " else "") + "saved, status not live", null) { dlg.dismiss(); startCreate(s.code, s.title) })
+          } else if (c.slug == "india") for (s in VpnJantit.SERVERS) list.addView(listRow(s.label, "Saved list, status not live", null) { dlg.dismiss(); startCreate(s.code, s.label) })
           return@fetch
         }
         VjSite.remember(P, l)
+        VjSite.saveServers(P, c.slug, l)
         st.text = "${l.count { it.status == "available" }} of ${l.size} available now - live from vpnjantit.com"
         for (s in l) {
           val chip = when (s.status) {

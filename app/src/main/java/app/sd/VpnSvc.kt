@@ -28,6 +28,7 @@ class VpnSvc : VpnService() {
     @Volatile var running = false
     val NATIVE = Any()
     @Volatile var total = 0
+    @Volatile var socksPortPub = 0
     @Volatile private var inst: VpnSvc? = null
     fun connected(): Int = inst?.let { i -> i.sess.count { it.isConnected && it !in i.suspect } } ?: 0
   }
@@ -139,6 +140,7 @@ class VpnSvc : VpnService() {
     if (t == 0) { LogBus.add("No account is turned ON"); stop(); stopSelf(); return }
     ss = bindSocks(getSharedPreferences("a", 0).getInt("sport", 3000))
     socksPort = ss!!.localPort
+    socksPortPub = socksPort
     LogBus.dbg("SOCKS port: $socksPort")
     thread { while (alive(g)) { try { val c = ss!!.accept(); pool.execute { try { handle(c) } catch (e: Exception) { c.close() } } } catch (e: Exception) { break } } }
     // tunnels start one after another (no burst of load on CPU/resolver)
