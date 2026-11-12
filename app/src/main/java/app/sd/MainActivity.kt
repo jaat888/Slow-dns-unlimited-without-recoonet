@@ -777,6 +777,16 @@ class MainActivity : Activity() {
     val col = pageCol()
     head(col, "Settings", "Changes save automatically")
 
+    val sb = card(14); sb.addView(secTitle("Battery saver"))
+    val bsSw = tint(Switch(this).apply { isChecked = P.getBoolean("bs", false) })
+    bsSw.setOnCheckedChangeListener { _, c -> applyBattery(c) }
+    helpNotes.add("Battery saver mode" to "One tap sets everything for the lowest battery use: low-load dnstt, at most 5 tunnels, no keep-alive packets, health check OFF (nothing is sent to test the tunnels; a tunnel that really breaks is still replaced), home ping every 60 seconds, no rotation or session break, no debug logs, and the phone may sleep (no wake lock). Turning it OFF puts your old values back. Reconnect the VPN to apply it fully. Auto-renew of VPNJantit accounts stays as you set it.")
+    sb.addView(row(settingLabel("Battery saver mode"), bsSw).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(12) })
+    sb.addView(tv("Tap ON and everything below is set for the lowest battery use: at most 5 tunnels, low-load dnstt, no keep-alive packets, no health check, no debug logs. Turn OFF to get your old values back. Reconnect the VPN to apply it fully.", 12f, sub).apply { layoutParams = lp(2) })
+    swRow(sb, "Let the phone sleep (no wake lock)", "ON: the VPN does not keep the phone awake. This is the biggest battery saver. With the screen off the tunnels may answer a little later. OFF: the phone is kept awake so the VPN is always quick. Applies at next START.", "nowl", false) { if (it) "Phone may sleep (next START)" else "Phone kept awake (next START)" }
+    numRow(sb, "Keep-alive packets every (s, 0 = off)", "dnstt/SSH sends a small packet this often so the tunnel is not closed while idle. 0 = none (saves battery; the health check still watches the tunnel, and a bad tunnel is replaced). Raise it if tunnels drop when you do nothing. Applies at next START.", "kal", 30, 0, 300)
+    col.addView(sb)
+
     val s0 = card(14); s0.addView(secTitle("DNS finder"))
     tapRow(s0, "Find the best DNS", "Tests public DNS servers and shows which ones answer and how fast (ping). UDP, DoT and DoH each have their own list. Tap Test all, then tap a DNS to use it or add it to your resolver list. Big list downloads thousands of public resolvers (up to 2000) and shows the ones that are online.", tv("UDP · DoT · DoH", 13f, acc, true)) { showDnsFinder() }
     col.addView(s0)
@@ -843,6 +853,11 @@ class MainActivity : Activity() {
     numRow(s4, "Tunnel start port", "Tunnels start from this port (A1#1 = start + 1 ...). Busy ports are skipped automatically. Applies at next START.", "tport", 2000, 1024, 65000)
     col.addView(s4)
 
+    val s9 = card(); s9.addView(secTitle("Reminders"))
+    swRow(s9, "Account expiry reminder", "Shows a notification before an account made by the app runs out, so you can renew it in time. Works in the background and after a phone restart.", "expy", true) { if (it) "Expiry reminder ON" else "Expiry reminder OFF" }
+    numRow(s9, "Remind before (hours)", "How many hours before the end the reminder comes. Applies immediately.", "expyh", 3, 1, 48)
+    col.addView(s9)
+
     val s8 = card(); s8.addView(secTitle("Ping"))
     numRow(s8, "Ping every (seconds)", "How often the chip on the Home screen measures the ping. Online it is the ping through the tunnel; while the VPN is off it is the phone's own internet (real ping). Lower = faster updates but a little more data. Applies immediately.", "pingint", 4, 1, 60)
     col.addView(s8)
@@ -883,6 +898,30 @@ class MainActivity : Activity() {
       } catch (e: Throwable) { }
     }
     toast("Pull down the shade, tap Edit (pencil) and drag the DNS tile up")
+  }
+
+  /** Battery saver: one tap sets the lowest-power values and remembers the old ones; OFF puts them back. */
+  private fun applyBattery(on: Boolean) {
+    val bools = listOf("low", "rot", "dbg", "nowl", "auto")
+    val ints = listOf("pingint", "sbreak", "kal")
+    val e = P.edit()
+    if (on) {
+      val prev = JSONObject()
+      for (k in bools) prev.put(k, if (P.contains(k)) P.getBoolean(k, false) else JSONObject.NULL)
+      for (k in ints) prev.put(k, if (P.contains(k)) P.getInt(k, 0) else JSONObject.NULL)
+      e.putString("bs_prev", prev.toString()).putBoolean("bs", true)
+      e.putBoolean("low", true).putBoolean("rot", false).putBoolean("dbg", false).putBoolean("nowl", true).putBoolean("auto", false)
+      e.putInt("pingint", 60).putInt("sbreak", 0).putInt("kal", 0)
+    } else {
+      val prev = try { JSONObject(P.getString("bs_prev", "{}") ?: "{}") } catch (x: Exception) { JSONObject() }
+      for (k in bools) if (prev.isNull(k)) e.remove(k) else e.putBoolean(k, prev.optBoolean(k))
+      for (k in ints) if (prev.isNull(k)) e.remove(k) else e.putInt(k, prev.optInt(k))
+      e.putBoolean("bs", false)
+    }
+    e.putBoolean("reopen_settings", true).commit()
+    LogBus.configure(P)
+    toast(if (on) "Battery saver ON. Reconnect the VPN to apply it" else "Battery saver OFF. Old values are back")
+    recreate()
   }
 
   private fun icon(@Suppress("UNUSED_PARAMETER") theme: Boolean) {
@@ -1152,7 +1191,8 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     pages = listOf(hv, av, lv, sv, iv)
     val frame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); pages.forEach { addView(it) }; addView(picker); addView(traffic) }
     setContentView(LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg); addView(frame); addView(buildNav()) })
-    show(0)
+    show(if (P.getBoolean("reopen_settings", false)) 3 else 0)
+    P.edit().remove("reopen_settings").apply()
     save()
     icon(dark)   // the launcher / notification icon always matches the theme
     askBackground()
@@ -1173,6 +1213,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
   }
   override fun onResume() {
     super.onResume(); resumed = true
+    try { ExpiryReceiver.check(this); ExpiryReceiver.schedule(this); DnsWidget.refresh(this) } catch (e: Throwable) { }
     // a VPNJantit account may have been created while the app was in the background
     if (accsDirty()) reloadAccounts()
     refresh()

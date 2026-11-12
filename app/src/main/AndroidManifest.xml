@@ -31,6 +31,11 @@
     <service android:name=".DnsTile" android:exported="true" android:label="DNS" android:icon="@drawable/ic_tile" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
       <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE"/></intent-filter>
     </service>
+    <receiver android:name=".ExpiryReceiver" android:exported="false"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter></receiver>
+    <receiver android:name=".DnsWidget" android:exported="true" android:label="DNS">
+      <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE"/></intent-filter>
+      <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_dns_info"/>
+    </receiver>
     <service android:name=".VpnSvc" android:exported="false" android:permission="android.permission.BIND_VPN_SERVICE">
       <intent-filter><action android:name="android.net.VpnService"/></intent-filter>
     </service>

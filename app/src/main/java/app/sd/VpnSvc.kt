@@ -97,9 +97,11 @@ class VpnSvc : VpnService() {
     if (on.compareAndSet(false, true)) {
       stopped.set(false)
       running = true; inst = this
+      try { DnsWidget.refresh(this) } catch (e: Throwable) { }
       LogBus.add("VPN service start")
       LogBus.dbg("android " + android.os.Build.VERSION.SDK_INT + " | abi: " + android.os.Build.SUPPORTED_ABIS.joinToString() + " | libs: " + (File(applicationInfo.nativeLibraryDir).list()?.joinToString() ?: "EMPTY"))
-      wl = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sd:w").also { it.acquire() }
+      // Battery saver: the phone may sleep while the VPN runs (no wake lock)
+      if (!getSharedPreferences("a", 0).getBoolean("nowl", false)) wl = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sd:w").also { it.acquire() }
       val g = gen.incrementAndGet(); pool = Executors.newCachedThreadPool()
       thread { try { begin(g) } catch (e: Throwable) { LogBus.add("start error: ${e.message}"); stop(); try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (x: Exception) {}; stopSelf() } }
     }
@@ -134,7 +136,12 @@ class VpnSvc : VpnService() {
       if (!o.optBoolean("on", true)) continue
       val ns = o.optString("ns"); val pk = o.optString("pk"); val u = o.optString("u"); val p = o.optString("p"); val d = o.optString("d")
       if (ns.isEmpty() || pk.isEmpty() || u.isEmpty() || p.isEmpty() || d.isEmpty()) { LogBus.add("Account ${a + 1} is incomplete - skipped"); continue }
-      val n = o.optInt("n", 1).coerceIn(1, 20)
+      var n = o.optInt("n", 1).coerceIn(1, 20)
+      // Battery saver: at most 5 tunnels run in total
+      if (getSharedPreferences("a", 0).getBoolean("bs", false)) {
+        n = if (rot) minOf(n, 5) else minOf(n, 5 - t)
+        if (n <= 0) { LogBus.add("Battery saver: only 5 tunnels run, account ${a + 1} skipped"); continue }
+      }
       t += n
       accl.add(Acct(a + 1, ns, pk, u, p, d, n))
       if (!rot) for (j in 1..n) { k++; val port = tbase + k; val label = "A${a + 1}#$j"; jobs.add { tunnel(ns, pk, u, p, d, port, label, g) } }
@@ -192,7 +199,7 @@ class VpnSvc : VpnService() {
     if (!stopped.compareAndSet(false, true)) return
     on.set(false); gen.incrementAndGet()
     try { Usage.sync(this) } catch (e: Throwable) {}
-    if (inst === this) { running = false; inst = null; total = 0 }
+    if (inst === this) { running = false; inst = null; total = 0; try { DnsWidget.refresh(this) } catch (e: Throwable) { } }
     try { pool.shutdownNow() } catch (e: Exception) {}
     LogBus.add("VPN stop")
     try { wl?.release() } catch (e: Exception) {}
@@ -290,7 +297,8 @@ class VpnSvc : VpnService() {
       s = x
       x.setPassword(pass); x.setConfig("StrictHostKeyChecking", "no")
       // do not drop quickly on a network/airplane-mode toggle: be patient for ~4 min (the active check catches it earlier)
-      x.setServerAliveInterval(30000); x.setServerAliveCountMax(8)
+      // keep-alive packets (Settings > Battery saver): 0 = none, the health check still watches the tunnel
+      x.setServerAliveInterval(pr.getInt("kal", 30).coerceIn(0, 300) * 1000); x.setServerAliveCountMax(8)
       x.connect(to)
       val tSsh = System.currentTimeMillis() - tSsh0
       LogBus.dbg("[$label] SSH auth OK (${tSsh}ms) | total connect ${System.currentTimeMillis() - t0}ms | user=$user")
