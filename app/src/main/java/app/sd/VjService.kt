@@ -68,6 +68,7 @@ class VjService : Service() {
     private var done = false
     private var server = "in6"
     private var serverLabel: String? = null
+    private var fresh = false
     private var user = ""
     private var pass = ""
     private var lastSaid = ""
@@ -93,7 +94,8 @@ class VjService : Service() {
         override fun run() {
             if (done) return
             try { tick() } catch (e: Throwable) { }
-            ui.postDelayed(this, 1000)
+            // Faster checks once the form is filled or the captcha is open, so "Create" is pressed right after the captcha is solved
+            ui.postDelayed(this, if (revealed || filledAt > 0L) 350L else 800L)
         }
     }
 
@@ -121,6 +123,7 @@ class VjService : Service() {
         if (running) return START_NOT_STICKY
         server = i?.getStringExtra(VpnJantit.EXTRA_SERVER)?.takeIf { it.isNotBlank() } ?: "in6"
         serverLabel = i?.getStringExtra(VpnJantit.EXTRA_LABEL)?.takeIf { it.isNotBlank() }
+        fresh = i?.getBooleanExtra(VpnJantit.EXTRA_FRESH, false) == true
         running = true
         if (!Settings.canDrawOverlays(this)) {
             finishFail("Allow \"Display over other apps\" for Mollad DNS, then try again", 0L)
@@ -143,11 +146,13 @@ class VjService : Service() {
         t0 = startedAt
         lastTick = startedAt
         lastGood = startedAt
+        // An account the user asked for by hand always starts with a clean browser (no old cookies)
+        if (fresh) wipeSite()
         buildUi()
         setupWebView()
         say("Opening the VPNJantit page...")
         web.loadUrl(String.format(VpnJantit.CREATE_URL, server))
-        ui.postDelayed(poll, 1500)
+        ui.postDelayed(poll, 700)
     }
 
     // ───────────────────────── overlay UI ─────────────────────────
@@ -304,12 +309,21 @@ class VjService : Service() {
         btns.addView(pillBtn(ctx, "Cancel", if (dark) 0xFF3A1D24.toInt() else 0xFFFDECEC.toInt(), 0xFFEF4444.toInt()) { finishCancelled() })
         card.addView(btns, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(14) })
 
-        // the card on top, the captcha box under it (it takes the rest of the screen)
+        // One neat sheet in the middle of the screen: the card on top, the captcha box under it.
+        // It is never wider than 420dp and stays clear of the status bar and the navigation bar.
+        val dm = resources.displayMetrics
+        val barTop = sysBar("status_bar_height")
+        val barBottom = sysBar("navigation_bar_height")
+        val sheetW = minOf(dm.widthPixels - dp(32), dp(420))
+        val freeH = dm.heightPixels - barTop - barBottom - dp(48)
+        val holderH = (freeH * 0.50f).toInt().coerceIn(dp(230), dp(440))
         val col = LinearLayout(ctx)
         col.orientation = LinearLayout.VERTICAL
         col.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        col.addView(holder, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(10) })
-        root.addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { setMargins(dp(14), dp(40), dp(14), dp(20)) })
+        col.addView(holder, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, holderH).apply { topMargin = dp(10) })
+        root.addView(col, FrameLayout.LayoutParams(sheetW, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER).apply {
+            topMargin = barTop + dp(12); bottomMargin = barBottom + dp(12)
+        })
 
         val lp = WindowManager.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
@@ -323,6 +337,11 @@ class VjService : Service() {
         wm?.addView(root, lp)
         built = true
         setStep(0)
+    }
+
+    private fun sysBar(name: String): Int {
+        val id = resources.getIdentifier(name, "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else 0
     }
 
     private fun setTouchable(on: Boolean) {
@@ -364,12 +383,15 @@ class VjService : Service() {
                     host == "hcaptcha.com" || host.endsWith(".hcaptcha.com") ||
                     host == "cloudflare.com" || host.endsWith(".cloudflare.com")
                 val accept = (request.requestHeaders?.get("Accept") ?: "").lowercase()
-                val video = u.endsWith(".mp4") || u.endsWith(".webm") || u.endsWith(".m3u8") || u.endsWith(".mpd") || u.endsWith(".mov")
+                val video = u.endsWith(".mp4") || u.endsWith(".webm") || u.endsWith(".m3u8") || u.endsWith(".mpd") || u.endsWith(".mov") ||
+                    u.endsWith(".mp3") || u.endsWith(".ogg") || u.endsWith(".m4a") || u.endsWith(".ts") || u.endsWith(".m4s")
+                // Style sheets of other sites (ad networks) are never needed
+                val css = !keep && (u.endsWith(".css") || accept.contains("text/css"))
                 val font = u.endsWith(".woff") || u.endsWith(".woff2") || u.endsWith(".ttf") || u.endsWith(".otf")
                 val image = accept.contains("image/") && !accept.contains("text/html") &&
                     !(host == "hcaptcha.com" || host.endsWith(".hcaptcha.com") || host == "cloudflare.com" || host.endsWith(".cloudflare.com"))
                 val adFrame = !request.isForMainFrame && !keep && accept.contains("text/html")
-                if (video || font || image || adFrame) {
+                if (video || font || image || adFrame || css) {
                     return WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
                 }
                 return null
@@ -458,7 +480,7 @@ class VjService : Service() {
 
         // 3) A real captcha needs the user (hCaptcha, or a Cloudflare box that does not finish by itself)
         if (ts == "wait") { if (waitSince == 0L) waitSince = now } else waitSince = 0L
-        val needUser = hc || (ts == "wait" && now - waitSince > 12_000L)
+        val needUser = hc || (ts == "wait" && now - waitSince > 8_000L)
         if (needUser) { reveal(); return }
         if (revealed && !gateOpen) hide()
 
@@ -471,9 +493,9 @@ class VjService : Service() {
             return
         }
 
-        val canClick = ts == "ok" || hcDone || (ts == "none" && now - filledAt > 5000L)
+        val canClick = ts == "ok" || hcDone || (ts == "none" && now - filledAt > 2500L)
         if (canClick) {
-            if (clicks == 0 || (hcDone && clicks < 2 && now - clickedAt > 2000L)) {
+            if (clicks == 0 || (hcDone && clicks < 2 && now - clickedAt > 1500L)) {
                 clicks++
                 clickedAt = now
                 evalJs(CLICK_JS)
@@ -578,11 +600,16 @@ class VjService : Service() {
         say("Continuing in the background...")
     }
 
-    /** "Continue in background": the window goes away but the account keeps being created. */
+    /**
+     * "Run in background" while the captcha is still waiting for the user: nothing can go on without it,
+     * so this job is postponed (no error, no popup again right away) and tried later.
+     */
     private fun hideByUser() {
-        userHiddenUntil = SystemClock.elapsedRealtime() + 60_000L
-        gateOpen = false
-        hide()
+        if (done) return
+        shutdown(Intent(VpnJantit.ACTION_RESULT).setClassName(packageName, "app.sd.VjBridge")
+            .putExtra(VpnJantit.R_OK, false)
+            .putExtra(VpnJantit.EXTRA_SERVER, server)
+            .putExtra(VpnJantit.R_ERROR, VpnJantit.POSTPONED))
     }
 
     private fun evalJs(js: String) {
@@ -631,6 +658,8 @@ class VjService : Service() {
         }
         built = false
         running = false
+        // A hand-made account leaves nothing behind: the site's cookies are wiped again when it is over
+        if (fresh) wipeSite()
         try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Throwable) { }
         stopSelf()
     }
@@ -669,13 +698,17 @@ class VjService : Service() {
 
     // ───────────────────────── cookies ─────────────────────────
 
-    private fun clearCookies() {
+    private fun wipeSite() {
         try {
             initWebViewProcess()
             val cm = CookieManager.getInstance()
             cm.removeAllCookies(null); cm.flush()
             WebStorage.getInstance().deleteAllData()
         } catch (e: Throwable) { }
+    }
+
+    private fun clearCookies() {
+        wipeSite()
         try { sendBroadcast(Intent(VpnJantit.ACTION_STATUS).setClassName(packageName, "app.sd.VjBridge").putExtra(VpnJantit.X_TEXT, "Site cookies cleared")) } catch (e: Throwable) { }
     }
 
@@ -727,8 +760,8 @@ class VjService : Service() {
             } catch (e: Exception) { }
         }
 
-        fun start(c: Context, server: String, label: String = "") {
-            c.startForegroundService(Intent(c, VjService::class.java).setAction(ACTION_START).putExtra(VpnJantit.EXTRA_SERVER, server).putExtra(VpnJantit.EXTRA_LABEL, label))
+        fun start(c: Context, server: String, label: String = "", fresh: Boolean = false) {
+            c.startForegroundService(Intent(c, VjService::class.java).setAction(ACTION_START).putExtra(VpnJantit.EXTRA_SERVER, server).putExtra(VpnJantit.EXTRA_LABEL, label).putExtra(VpnJantit.EXTRA_FRESH, fresh))
         }
 
         fun clear(c: Context) {
@@ -756,13 +789,26 @@ class VjService : Service() {
 (function(){
   var st=document.getElementById('vj-crop');
   if(!st){ st=document.createElement('style'); st.id='vj-crop'; document.head.appendChild(st); }
+  /* A full-page Cloudflare check ("Just a moment...") has its own layout: only the ads / banners are hidden, the check itself stays whole. */
+  var cfFull=false;
+  try{
+    var tt=((document.title||'')+' '+((document.body&&document.body.innerText)||'').slice(0,400)).toLowerCase();
+    cfFull=/just a moment|verify you are human|checking your browser|attention required/.test(tt) && !document.querySelector('.h-captcha,iframe[src*="hcaptcha.com"]');
+  }catch(e0){}
+  if(cfFull){
+    st.textContent='html,body{background:#fff !important;overflow:auto !important}'+
+      'ins,.adsbygoogle,[id*="google_ads"],[class*="adsbygoogle"],[id*="aswift"],[id^="div-gpt"],[data-anchor-status],[data-vignette-status],[data-ad-status],[class*="ad-container"],[id*="cookie"],[class*="cookie"],[class*="consent"]{display:none !important}';
+    return 'cf';
+  }
   st.textContent='html,body{background:#fff !important;overflow:auto !important}'+
     'ins,.adsbygoogle,[id*="google_ads"],[class*="adsbygoogle"],[id*="aswift"],[id^="div-gpt"],[data-anchor-status],[data-vignette-status],[data-ad-status],[class*="ad-container"],[id*="cookie"],[class*="cookie"],[class*="consent"],iframe:not([src*="hcaptcha.com"]):not([src*="challenges.cloudflare.com"]){display:none !important}'+
     'html>*:not(head):not(body){display:none !important}'+
     'body div[style*="position: fixed"]:not(:has(iframe[src*="hcaptcha.com"])):not(:has(iframe[src*="challenges.cloudflare.com"])):not(.h-captcha):not(.cf-turnstile){display:none !important}'+
     'body *{visibility:hidden !important}'+
     '.h-captcha,.h-captcha *,.cf-turnstile,.cf-turnstile *,iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"]{visibility:visible !important}'+
-    '.h-captcha,.cf-turnstile{position:fixed !important;top:12px !important;left:50% !important;transform:translateX(-50%) !important;z-index:2147483647 !important;background:#fff !important}';
+    '.h-captcha,.cf-turnstile{position:fixed !important;top:16px !important;left:50% !important;transform:translateX(-50%) !important;z-index:2147483647 !important;background:#fff !important;padding:14px !important;box-sizing:content-box !important;border-radius:12px !important;min-width:300px !important;min-height:70px !important}'+
+    'dialog,[role="dialog"],[aria-modal="true"]{display:none !important}'+
+    '[role="dialog"]:has(iframe[src*="hcaptcha.com"]),[role="dialog"]:has(iframe[src*="challenges.cloudflare.com"]),[role="dialog"]:has(.cf-turnstile),[role="dialog"]:has(.h-captcha){display:block !important}';
   /* The site's own pop-up ad ("Free VPN access" with an X) sits on top of the captcha. It is a fixed element added by the ad script,
      so every fixed / sticky element that does not hold the captcha is hidden, plus ad hosts that live in a shadow root. */
   try{

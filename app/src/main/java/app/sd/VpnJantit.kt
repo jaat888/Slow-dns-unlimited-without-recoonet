@@ -28,6 +28,12 @@ object VpnJantit {
 
     const val EXTRA_SERVER = "vj_server"
     const val EXTRA_LABEL = "vj_label"
+    /** true = the user started this by hand: the site's cookies are wiped before and after the run. */
+    const val EXTRA_FRESH = "vj_fresh"
+
+    /** "Run in background" pressed while the captcha was still unsolved: the job stops and is tried again later. */
+    const val POSTPONED = "Postponed"
+    const val POSTPONE_MS = 10L * 60_000L
 
     const val R_OK = "vj_ok"
     const val R_HOST = "vj_host"

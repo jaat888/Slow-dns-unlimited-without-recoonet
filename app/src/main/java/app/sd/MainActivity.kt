@@ -572,7 +572,21 @@ class MainActivity : Activity() {
     .put("n", a.n.selectedItem as Int).put("on", a.sw.isChecked)
     .put("role", a.role).put("srv", a.srv).put("exp", a.exp)
 
-  private fun serialize(): String { val arr = JSONArray(); accs.forEach { arr.put(js(it)) }; return arr.toString() }
+  /** An app-made (VPNJantit) account whose time is over. Accounts typed in by hand are never removed. */
+  private fun isDead(a: Acc) = a.srv.isNotBlank() && a.exp > 0 && a.exp <= System.currentTimeMillis()
+
+  private fun serialize(): String { val arr = JSONArray(); accs.forEach { if (!isDead(it)) arr.put(js(it)) }; return arr.toString() }
+
+  /** Expired VPNJantit accounts delete themselves from the list. */
+  private fun dropExpired() {
+    if (!::accBox.isInitialized) return
+    val dead = accs.count { isDead(it) }
+    if (dead == 0) return
+    save()           // writes the list without the dead ones
+    reloadAccounts()
+    LogBus.add("VPNJantit: $dead expired account(s) removed")
+    toast(if (dead == 1) "An expired VPNJantit account was removed" else "$dead expired VPNJantit accounts were removed")
+  }
   private fun save() { P.edit().putString("acc2", serialize()).apply() }
   /** Called by the VPNJantit manager before it writes a new account, so nothing typed here is lost. */
   fun saveNow() { if (::accBox.isInitialized && accs.isNotEmpty()) save() }
@@ -829,6 +843,10 @@ class MainActivity : Activity() {
     numRow(s4, "Tunnel start port", "Tunnels start from this port (A1#1 = start + 1 ...). Busy ports are skipped automatically. Applies at next START.", "tport", 2000, 1024, 65000)
     col.addView(s4)
 
+    val s8 = card(); s8.addView(secTitle("Ping"))
+    numRow(s8, "Ping every (seconds)", "How often the chip on the Home screen measures the ping. Online it is the ping through the tunnel; while the VPN is off it is the phone's own internet (real ping). Lower = faster updates but a little more data. Applies immediately.", "pingint", 4, 1, 60)
+    col.addView(s8)
+
     val s7 = card(); s7.addView(secTitle("Logs"))
     swRow(s7, "Auto clear logs", "Clears the on-screen log by itself so it never gets long. The Copy button still gives you what is on screen at that moment.", "logauto", true) { if (it) "Logs will clear automatically" else "Logs will not clear by themselves" }
     swRow(s7, "Debug logs", "ON: full details (timings, resolver, ports, DNS query rates, VPNJantit steps). OFF: short clean lines only, such as connected, failed, retrying. Turn ON when something does not work and you need to see why.", "dbg", false) { if (it) "Debug logs ON (details)" else "Debug logs OFF (clean)" }
@@ -1026,9 +1044,10 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     chipState = state
     if (state != 2) { pingMs = -1; pingFails = 0 }
     paintChip()
-    if (state == 2) pingTick()
+    if (state == 2) pingTick() else if (state == 0) realPingTick()
     statusTv.text = when (state) { 2 -> "You are online"; 1 -> "Getting tunnels ready"; 3 -> "Closing tunnels"; else -> "Ready when you are" }
     VjManager.tick(this)
+    dropExpired()
     if (::trafV.isInitialized && trafV.visibility == View.VISIBLE && (++trafTick % 3 == 0)) updateTraffic()
     val vl = VjManager.line(this)
     hintTv.text = if (vl.isNotEmpty()) "●  $vl" else if (r) "Stop the VPN to edit accounts or switch them ON/OFF" else ""
@@ -1156,9 +1175,13 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     catch (e: Exception) { toast("Open Settings > Apps > Mollad DNS > Notifications") }
   }
 
+  /** System dialogs follow the app's Light / Dark setting (the app theme itself is dark). */
+  private fun dlgCtx(): android.content.Context = android.view.ContextThemeWrapper(this,
+    if (dark) android.R.style.Theme_DeviceDefault_Dialog_Alert else android.R.style.Theme_DeviceDefault_Light_Dialog_Alert)
+
   private fun askOverlay() {
     if (Settings.canDrawOverlays(this)) { toast("Display over other apps is already allowed"); return }
-    android.app.AlertDialog.Builder(this).setTitle("Allow display over other apps")
+    android.app.AlertDialog.Builder(dlgCtx()).setTitle("Allow display over other apps")
       .setMessage("VPNJantit accounts are created in the background. Mollad DNS needs this permission so the captcha can pop up on top of any app, only when it needs you. Nothing else is shown.")
       .setPositiveButton("Open settings") { _, _ ->
         try { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
@@ -1198,7 +1221,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     val cur = P.getString("fdns", "1.1.1.1") ?: "1.1.1.1"
     val names = (dnsChoices.map { it.first + "  (" + it.second + ")" } + "Custom...").toTypedArray()
     val idx = dnsChoices.indexOfFirst { it.second == cur }
-    android.app.AlertDialog.Builder(this).setTitle("Forward DNS")
+    android.app.AlertDialog.Builder(dlgCtx()).setTitle("Forward DNS")
       .setSingleChoiceItems(names, if (idx < 0) dnsChoices.size else idx) { d, w ->
         d.dismiss()
         if (w < dnsChoices.size) {
@@ -1211,8 +1234,9 @@ The Connect button at the bottom connects or disconnects. In the card you see up
   private fun askCustomDns() {
     val e = EditText(this).apply {
       hint = "e.g. 9.9.9.11"; setSingleLine(); setText(P.getString("fdns", "") ?: ""); setPadding(dp(20), dp(14), dp(20), dp(14))
+      setTextColor(if (dark) 0xFFEAF0FF.toInt() else 0xFF0F1630.toInt()); setHintTextColor(if (dark) 0xFF8E9ABB.toInt() else 0xFF6A7490.toInt())
     }
-    android.app.AlertDialog.Builder(this).setTitle("Custom forward DNS").setView(e)
+    android.app.AlertDialog.Builder(dlgCtx()).setTitle("Custom forward DNS").setView(e)
       .setPositiveButton("Save") { _, _ ->
         val v = e.text.toString().trim()
         if (Regex("^\\d{1,3}(\\.\\d{1,3}){3}\$").matches(v)) {
@@ -1227,13 +1251,17 @@ The Connect button at the bottom connects or disconnects. In the card you see up
   private var pingFails = 0
   private var pingT = 0L
   private var pingBusy = false
+  private var realMs = -1
+  private var realT = 0L
+  private var realBusy = false
 
   /** Top-right chip: Offline / Connecting / Closing, and while online the live ping through the tunnel (ms). */
   private fun paintChip() {
     val good = 0xFF10B981.toInt()
     hdrChip.text = when (chipState) {
       2 -> if (pingMs > 0) "●  $pingMs ms" else if (pingMs == -2) "●  No reply" else "●  Online"
-      1 -> "●  Connecting"; 3 -> "●  Closing"; else -> "●  Offline"
+      1 -> "●  Connecting"; 3 -> "●  Closing"
+      else -> if (realMs > 0) "●  Offline  ·  $realMs ms" else "●  Offline"
     }
     val c = when (chipState) {
       2 -> if (pingMs == -2 || pingMs > 600) red else if (pingMs > 250) amber else good
@@ -1247,7 +1275,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
   /** Measures the real tunnel ping every few seconds (a DNS question sent through the app's SOCKS port). */
   private fun pingTick() {
     val now = System.currentTimeMillis()
-    if (pingBusy || now - pingT < 4000L) return
+    if (pingBusy || now - pingT < P.getInt("pingint", 4).coerceIn(1, 60) * 1000L) return
     val port = VpnSvc.socksPortPub
     if (port <= 0) return
     pingBusy = true; pingT = now
@@ -1258,6 +1286,22 @@ The Connect button at the bottom connects or disconnects. In the card you see up
         pingBusy = false
         if (ms > 0) { pingMs = ms; pingFails = 0 } else { pingFails++; if (pingFails >= 2) pingMs = -2 }
         if (chipState == 2) paintChip()
+      }
+    }.start()
+  }
+
+  /** VPN is off: the chip shows the ping of the phone's own internet (no tunnel), so you see what the net really gives. */
+  private fun realPingTick() {
+    val now = System.currentTimeMillis()
+    if (realBusy || now - realT < P.getInt("pingint", 4).coerceIn(1, 60) * 1000L) return
+    realBusy = true; realT = now
+    val dns = (P.getString("fdns", "1.1.1.1") ?: "1.1.1.1").trim().ifBlank { "1.1.1.1" }
+    Thread {
+      val ms = DnsCheck.udp(dns, 2000)
+      h.post {
+        realBusy = false
+        realMs = if (ms > 0) ms else -1
+        if (chipState == 0) paintChip()
       }
     }.start()
   }
@@ -1899,7 +1943,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     trafBody.addView(tv("Reset usage history", 12.5f, acc, true).apply {
       setPadding(dp(4), dp(14), dp(4), dp(16))
       setOnClickListener {
-        android.app.AlertDialog.Builder(this@MainActivity).setTitle("Reset usage history?")
+        android.app.AlertDialog.Builder(dlgCtx()).setTitle("Reset usage history?")
           .setMessage("This clears the VPN data counters for all days.")
           .setPositiveButton("Reset") { _, _ -> Usage.clear(this@MainActivity); renderUsage() }
           .setNegativeButton("Cancel", null).show()
@@ -2094,7 +2138,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     if (a.srv.isBlank()) { toast("This account was not made by the app"); return }
     save()
     P.edit().putString("vj_updu", a.us.text.toString().trim()).apply()
-    when (VjManager.launch(this, a.role, a.srv, a.srv)) {
+    when (VjManager.launch(this, a.role, a.srv, a.srv, true)) {
       "perm" -> askOverlay()
       "fail" -> toast("Could not start the account creator")
       else -> toast("Updating ${a.srv}...")
@@ -2104,7 +2148,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
 
   private fun startCreate(code: String, title: String) {
     save()
-    when (VjManager.launch(this, "", code, title)) {
+    when (VjManager.launch(this, "", code, title, true)) {
       "perm" -> askOverlay()
       "fail" -> toast("Could not start the account creator")
       "busy" -> toast("VPNJantit is already working on it")

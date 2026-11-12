@@ -57,8 +57,31 @@ object VjStore {
         if (changed) p.edit().putString("acc2", a.toString()).apply()
     }
 
+    /** An account that was made by the app (it has a server) and whose time is over. Accounts typed in by hand are never touched. */
+    fun isExpired(o: JSONObject): Boolean {
+        val e = o.optLong("exp", 0L)
+        return o.optString("srv").isNotBlank() && e > 0 && e <= System.currentTimeMillis()
+    }
+
+    /** Removes every expired app-made account from the saved list. Returns how many were removed. */
+    fun purgeExpired(p: SharedPreferences): Int {
+        val a = accounts(p)
+        val out = JSONArray()
+        var n = 0
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            if (isExpired(o)) {
+                n++
+                LogBus.add("VPNJantit: the expired " + o.optString("srv") + " account (" + o.optString("u") + ") was removed")
+            } else out.put(o)
+        }
+        if (n > 0) p.edit().putString("acc2", out.toString()).apply()
+        return n
+    }
+
     /** The role (main / backup) that needs a new account right now, or null when all is fine. */
     fun needed(p: SharedPreferences): String? {
+        purgeExpired(p)
         adopt(p)
         val a = accounts(p)
         return roles(p).firstOrNull { needsRenew(roleObj(a, it)) }
@@ -221,7 +244,7 @@ object VjManager {
     }
 
     /** role = "" for an account the user asked for by hand. */
-    fun launch(c: Context, role: String, srv: String, label: String = ""): String {
+    fun launch(c: Context, role: String, srv: String, label: String = "", fresh: Boolean = false): String {
         if (isBusy()) return "busy"
         if (!Settings.canDrawOverlays(c)) return "perm"
         val p = VjStore.prefs(c)
@@ -229,7 +252,7 @@ object VjManager {
         p.edit().putString("vj_role", role).putLong("vj_next", 0L).apply()
         LogBus.add("VPNJantit: creating a ${if (role.isEmpty()) "" else role.uppercase() + " "}account on $srv")
         try {
-            VjService.start(c, srv, label)
+            VjService.start(c, srv, label, fresh)
         } catch (e: Throwable) {
             busy = false; status = ""
             LogBus.add("VPNJantit: could not start the creator: ${e.message}")
@@ -263,9 +286,18 @@ object VjManager {
         if (!ok) {
             val err = d.getStringExtra(VpnJantit.R_ERROR).orEmpty().ifBlank { "Unknown error" }
             val detail = d.getStringExtra(VpnJantit.R_DETAIL).orEmpty()
-            LogBus.add("VPNJantit: FAILED - $err" + if (detail.isNotBlank()) " ($detail)" else "")
-            if (err != "Cancelled") p.edit().putString("vj_lasterr", err).putLong("vj_lasterr_t", System.currentTimeMillis()).apply()
+            if (err != VpnJantit.POSTPONED) LogBus.add("VPNJantit: FAILED - $err" + if (detail.isNotBlank()) " ($detail)" else "")
+            if (err != "Cancelled" && err != VpnJantit.POSTPONED) p.edit().putString("vj_lasterr", err).putLong("vj_lasterr_t", System.currentTimeMillis()).apply()
             if (err == "Cancelled") { p.edit().putLong("vj_hold", System.currentTimeMillis() + 10 * 60_000L).apply(); ui(); return }
+            if (err == VpnJantit.POSTPONED) {
+                // The captcha was not solved: no error, no alarm. The automatic mode simply tries again later.
+                p.edit().putString("vj_lasterr", "").apply()
+                p.edit().putLong("vj_hold", System.currentTimeMillis() + VpnJantit.POSTPONE_MS).apply()
+                if (role.isNotEmpty() && p.getBoolean("vj_auto", false)) schedule(c, VpnJantit.POSTPONE_MS, "captcha was not solved, postponed")
+                else LogBus.add("VPNJantit: postponed (captcha not solved)")
+                toast(c, if (role.isNotEmpty() && p.getBoolean("vj_auto", false)) "Postponed. I will ask again in " + (VpnJantit.POSTPONE_MS / 60_000L) + " min" else "Postponed. Tap Create again when you can solve the captcha")
+                ui(); return
+            }
             if (Regex("full", RegexOption.IGNORE_CASE).containsMatchIn(err) && srv.isNotEmpty()) {
                 p.edit().putLong("vjfull_$srv", VjStore.nextReset()).apply()
                 toast(c, "$srv is full, trying another server")
@@ -274,7 +306,7 @@ object VjManager {
             }
             tries = 0
             toast(c, "VPNJantit: $err")
-            Notif.alert(c, 44, "VPNJantit could not create an account", err + if (detail.isNotBlank()) "\n$detail" else "")
+            Notif.alert(c, 44, "VPNJantit could not create an account", err + if (detail.isNotBlank()) "\n$detail" else "", 120_000L)
             val retry = d.getLongExtra(VpnJantit.R_RETRY_MS, 0L)
             if (role.isNotEmpty()) {
                 if (retry > 0) schedule(c, retry, err) else p.edit().putLong("vj_hold", System.currentTimeMillis() + 10 * 60_000L).apply()
@@ -302,7 +334,7 @@ object VjManager {
         val label = (if (role.isNotEmpty()) role.uppercase() + " " else "") + srv + ": " + u + e
         LogBus.add("VPNJantit: account created ($label)")
         toast(c, "Account created ($srv): $u$e")
-        Notif.alert(c, 43, "VPNJantit account ready", label)
+        Notif.alert(c, 43, "VPNJantit account ready", label, 120_000L)
 
         if (VpnSvc.running) {
             LogBus.add("VPNJantit: restarting the VPN to load the new account")

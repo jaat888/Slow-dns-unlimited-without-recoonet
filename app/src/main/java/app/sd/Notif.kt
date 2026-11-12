@@ -36,17 +36,20 @@ object Notif {
     }
 
     /** A heads-up notification (captcha needed, account ready, error ...). */
-    fun alert(c: Context, id: Int, title: String, text: String) {
+    fun alert(c: Context, id: Int, title: String, text: String, timeoutMs: Long = 0L) {
         try {
             channels(c)
-            val n = Notification.Builder(c, CH_ALERT)
+            // "Account ready" and "could not create" never sit on top of each other: the newer one replaces the older
+            if (id == 43) cancel(c, 44) else if (id == 44) cancel(c, 43)
+            val b = Notification.Builder(c, CH_ALERT)
                 .setSmallIcon(R.drawable.ic_stat).setLargeIcon(logo(c))
                 .setContentTitle(title)
                 .setContentText(text)
                 .setStyle(Notification.BigTextStyle().bigText(text))
                 .setContentIntent(open(c))
                 .setAutoCancel(true)
-                .build()
+            if (timeoutMs > 0L) b.setTimeoutAfter(timeoutMs)
+            val n = b.build()
             c.getSystemService(NotificationManager::class.java)?.notify(id, n)
         } catch (e: Throwable) { }
     }

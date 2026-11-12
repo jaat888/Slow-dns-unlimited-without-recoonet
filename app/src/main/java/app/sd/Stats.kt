@@ -16,6 +16,13 @@ object Stats {
 // Speed limit (Mbps). Applied separately to upload and download.
 object Limit {
   @Volatile var bps = 0L
+  /** While an account is being created the other apps' traffic is slowed down so the page loads fast (bytes/s per direction). */
+  const val SQUEEZE = 16_000L
+  fun eff(): Long {
+    val u = bps
+    if (!VjManager.isBusy()) return u
+    return if (u in 1 until SQUEEZE) u else SQUEEZE
+  }
   fun load(p: SharedPreferences) {
     val m = p.getInt("mbps", 10).coerceIn(1, 100)
     bps = if (p.getBoolean("lim", false)) m * 125000L else 0L
@@ -25,7 +32,7 @@ object Limit {
 class Pace {
   private var next = 0L
   fun wait(n: Int) {
-    val b = Limit.bps; if (b <= 0 || n <= 0) return
+    val b = Limit.eff(); if (b <= 0 || n <= 0) return
     var w = 0L
     synchronized(this) {
       val now = System.nanoTime(); if (next < now) next = now
