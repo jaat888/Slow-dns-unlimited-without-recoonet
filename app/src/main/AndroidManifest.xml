@@ -6,6 +6,8 @@
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
   <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+  <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"/>
+  <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
   <queries>
     <intent>
       <action android:name="android.intent.action.MAIN"/>
@@ -23,7 +25,7 @@
     <!-- Creates the VPNJantit account in the background (own process, so the VPN stays safe if the WebView crashes) -->
     <service android:name=".VjService" android:process=":vj" android:exported="false"/>
     <!-- Receives status lines and results from the :vj process -->
-    <receiver android:name=".VjBridge" android:exported="false"/>
+    <receiver android:name=".VjBridge" android:exported="false"><intent-filter><action android:name="app.sd.VJ_STATUS"/><action android:name="app.sd.VJ_RESULT"/></intent-filter></receiver>
     <receiver android:name=".VjReceiver" android:exported="false"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter></receiver>
     <service android:name=".VpnSvc" android:exported="false" android:permission="android.permission.BIND_VPN_SERVICE">
       <intent-filter><action android:name="android.net.VpnService"/></intent-filter>

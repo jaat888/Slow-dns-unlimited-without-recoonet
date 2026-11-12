@@ -542,6 +542,7 @@ class VpnSvc : VpnService() {
   }
 
   private fun dns(q: ByteArray): ByteArray {
+    TrafficLog.dnsQuery(q)
     val s = acquire() ?: throw Exception()
     try {
       val ch = s.openChannel("direct-tcpip") as ChannelDirectTCPIP

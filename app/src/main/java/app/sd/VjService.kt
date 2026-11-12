@@ -293,7 +293,7 @@ class VjService : Service() {
             return
         }
         evalJs(MUTE_JS)
-        evalJs(DISMISS_JS)
+        if (revealed && !gateOpen) evalJs(CROP_JS) else evalJs(DISMISS_JS)
         // A probe that never answered (WebView frozen) must not block the machine forever
         if (busy && now - busyAt > 8000L) busy = false
         if (busy) return
@@ -390,7 +390,7 @@ class VjService : Service() {
         }
         say("Account created, saving it...")
         val exp = parseExpiry(o.optString("exp"))
-        val data = Intent(VpnJantit.ACTION_RESULT).setPackage(packageName)
+        val data = Intent(VpnJantit.ACTION_RESULT).setClassName(packageName, "app.sd.VjBridge")
             .putExtra(VpnJantit.R_OK, true)
             .putExtra(VpnJantit.EXTRA_SERVER, server)
             .putExtra(VpnJantit.R_HOST, host)
@@ -423,7 +423,7 @@ class VjService : Service() {
         try {
             getSystemService(android.app.NotificationManager::class.java)?.notify(NID, workNotif(t))
         } catch (e: Throwable) { }
-        try { sendBroadcast(Intent(VpnJantit.ACTION_STATUS).setPackage(packageName).putExtra(VpnJantit.X_TEXT, t)) } catch (e: Throwable) { }
+        try { sendBroadcast(Intent(VpnJantit.ACTION_STATUS).setClassName(packageName, "app.sd.VjBridge").putExtra(VpnJantit.X_TEXT, t)) } catch (e: Throwable) { }
     }
 
     private fun showUi(msg: String) {
@@ -481,7 +481,7 @@ class VjService : Service() {
 
     private fun finishFail(msg: String, retryMs: Long) {
         if (done) return
-        shutdown(Intent(VpnJantit.ACTION_RESULT).setPackage(packageName)
+        shutdown(Intent(VpnJantit.ACTION_RESULT).setClassName(packageName, "app.sd.VjBridge")
             .putExtra(VpnJantit.R_OK, false)
             .putExtra(VpnJantit.EXTRA_SERVER, server)
             .putExtra(VpnJantit.R_ERROR, msg)
@@ -490,7 +490,7 @@ class VjService : Service() {
 
     private fun finishCancelled() {
         if (done) return
-        shutdown(Intent(VpnJantit.ACTION_RESULT).setPackage(packageName)
+        shutdown(Intent(VpnJantit.ACTION_RESULT).setClassName(packageName, "app.sd.VjBridge")
             .putExtra(VpnJantit.R_OK, false)
             .putExtra(VpnJantit.EXTRA_SERVER, server)
             .putExtra(VpnJantit.R_ERROR, "Cancelled"))
@@ -555,7 +555,7 @@ class VjService : Service() {
             cm.removeAllCookies(null); cm.flush()
             WebStorage.getInstance().deleteAllData()
         } catch (e: Throwable) { }
-        try { sendBroadcast(Intent(VpnJantit.ACTION_STATUS).setPackage(packageName).putExtra(VpnJantit.X_TEXT, "Site cookies cleared")) } catch (e: Throwable) { }
+        try { sendBroadcast(Intent(VpnJantit.ACTION_STATUS).setClassName(packageName, "app.sd.VjBridge").putExtra(VpnJantit.X_TEXT, "Site cookies cleared")) } catch (e: Throwable) { }
     }
 
     // ───────────────────────── random user/pass ─────────────────────────
@@ -636,6 +636,7 @@ class VjService : Service() {
   var st=document.getElementById('vj-crop');
   if(!st){ st=document.createElement('style'); st.id='vj-crop'; document.head.appendChild(st); }
   st.textContent='html,body{background:#fff !important;overflow:auto !important}'+
+    'ins,[id*="google_ads"],[class*="adsbygoogle"],[id*="aswift"],iframe:not([src*="hcaptcha.com"]):not([src*="challenges.cloudflare.com"]){display:none !important}'+
     'body *{visibility:hidden !important}'+
     '.h-captcha,.h-captcha *,.cf-turnstile,.cf-turnstile *,iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"]{visibility:visible !important}'+
     '.h-captcha,.cf-turnstile{position:fixed !important;top:12px !important;left:50% !important;transform:translateX(-50%) !important;z-index:2147483647 !important;background:#fff !important}';

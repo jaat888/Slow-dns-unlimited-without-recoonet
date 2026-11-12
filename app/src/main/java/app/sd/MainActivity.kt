@@ -95,7 +95,7 @@ internal class PowerIcon(ctx: Context) : View(ctx) {
 }
 
 class MainActivity : Activity() {
-  companion object { @Volatile var inst: MainActivity? = null }
+  companion object { @Volatile var inst: MainActivity? = null; @Volatile var splashDone = false }
   private var resumed = false
   private var pulse: ObjectAnimator? = null
   private val h = Handler(Looper.getMainLooper())
@@ -338,7 +338,6 @@ class MainActivity : Activity() {
     coBig = big(); coSm = sm(); tmBig = big(); tmSm = sm()
     col.addView(row(statCard("⇄", "Tunnels", coBig, coSm), statCard("◷", "Session time", tmBig, tmSm)))
 
-    col.addView(row(chip("Accounts") { show(1) }, chip("Logs") { show(2) }, chip("Settings") { show(3) }).apply { layoutParams = lp(14) })
 
     summaryTv = tv("", 13f, fg).apply { setLineSpacing(0f, 1.2f) }
     col.addView(card(14).apply { addView(secTitle("Active accounts")); addView(summaryTv.apply { layoutParams = lp(8) }) })
@@ -541,7 +540,8 @@ class MainActivity : Activity() {
 
   @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
   override fun onBackPressed() {
-    if (::appPickV.isInitialized && appPickV.visibility == View.VISIBLE) closeAppPicker()
+    if (::trafV.isInitialized && trafV.visibility == View.VISIBLE) closeTraffic()
+    else if (::appPickV.isInitialized && appPickV.visibility == View.VISIBLE) closeAppPicker()
     else if (::accDetailV.isInitialized && accDetailV.visibility == View.VISIBLE) closeDetail() else super.onBackPressed()
   }
 
@@ -695,6 +695,14 @@ class MainActivity : Activity() {
     val col = pageCol()
     head(col, "Settings", "Changes save automatically")
 
+    val s6 = card(14); s6.addView(secTitle("Network and apps"))
+    fdnsVal = tv("", 13f, acc, true); appfVal = tv("", 13f, acc, true)
+    tapRow(s6, "Forward DNS", "The DNS server your phone's DNS questions are sent to, through the tunnel. Pick Cloudflare, Google, Quad9, AdGuard or OpenDNS, or type your own IPv4 address. If sites do not open, try another one. Applies at next START.", fdnsVal) { pickForwardDns() }
+    tapRow(s6, "App filter", "Choose which apps use the VPN. All apps = everything goes through the tunnel. Only selected = just the apps you tick use the VPN, the rest use your normal internet. All except = every app uses the VPN except the ones you tick. Applies at next START.", appfVal) { openAppPicker() }
+    tapRow(s6, "Traffic monitor", "See which apps use data (even in the background) and which websites are being looked up. Apps need Usage access permission. Sites show while the VPN is connected.", tv("", 13f, acc, true)) { openTraffic() }
+    col.addView(s6)
+
+
     val s1 = card(14); s1.addView(secTitle("Connection"))
     numRow(s1, "Connection timeout (s)", "How long one tunnel waits to connect before it counts as failed and retries. Raise it for slow accounts.", "to", 20, 5, 300)
     numRow(s1, "Retry max wait (s)", "After a failure a tunnel retries after 3s, then 6s, 12s, 24s... up to this limit. It never stops retrying. Set 3 to always retry every 3 seconds.", "rmax", 30, 3, 120)
@@ -729,12 +737,6 @@ class MainActivity : Activity() {
     numRow(s4, "SOCKS port", "The app's local proxy port. If it is busy (for example in Termux) the app picks a free one. Applies at next START.", "sport", 3000, 1024, 65535)
     numRow(s4, "Tunnel start port", "Tunnels start from this port (A1#1 = start + 1 ...). Busy ports are skipped automatically. Applies at next START.", "tport", 2000, 1024, 65000)
     col.addView(s4)
-
-    val s6 = card(); s6.addView(secTitle("Network and apps"))
-    fdnsVal = tv("", 13f, acc, true); appfVal = tv("", 13f, acc, true)
-    tapRow(s6, "Forward DNS", "The DNS server your phone's DNS questions are sent to, through the tunnel. Pick Cloudflare, Google, Quad9, AdGuard or OpenDNS, or type your own IPv4 address. If sites do not open, try another one. Applies at next START.", fdnsVal) { pickForwardDns() }
-    tapRow(s6, "App filter", "Choose which apps use the VPN. All apps = everything goes through the tunnel. Only selected = just the apps you tick use the VPN, the rest use your normal internet. All except = every app uses the VPN except the ones you tick. Applies at next START.", appfVal) { openAppPicker() }
-    col.addView(s6)
 
     val s7 = card(); s7.addView(secTitle("Logs"))
     swRow(s7, "Auto clear logs", "Clears the on-screen log by itself so it never gets long. The Copy button still gives you what is on screen at that moment.", "logauto", true) { if (it) "Logs will clear automatically" else "Logs will not clear by themselves" }
@@ -866,7 +868,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     shown = true
     cur = i
     if (i != 1) closeDetail()
-    closeAppPicker()
+    closeAppPicker(); closeTraffic()
     pages.forEachIndexed { k, p -> p.visibility = if (k == i) View.VISIBLE else View.GONE }
     navIcons.forEachIndexed { k, v -> v.color = if (k == i) acc else sub; v.invalidate() }
     navLabels.forEachIndexed { k, t -> t.setTextColor(if (k == i) acc else sub) }
@@ -932,6 +934,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     statePill.text = when (state) { 2 -> "Connected"; 1 -> "Connecting..."; 3 -> "Disconnecting..."; else -> "Disconnected" }
     statusTv.text = when (state) { 2 -> "You are online"; 1 -> "Getting tunnels ready"; 3 -> "Closing tunnels"; else -> "Ready when you are" }
     VjManager.tick(this)
+    if (::trafV.isInitialized && trafV.visibility == View.VISIBLE && (++trafTick % 3 == 0)) updateTraffic()
     val vl = VjManager.line(this)
     hintTv.text = if (vl.isNotEmpty()) "●  $vl" else if (r) "Stop the VPN to edit accounts or switch them ON/OFF" else ""
     hintTv.visibility = if (hintTv.text.isEmpty()) View.GONE else View.VISIBLE
@@ -1005,12 +1008,20 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     if (!dark) window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
     val hv = buildHome(); val av = buildAccounts(); val lv = buildLogs(); val sv = buildSettings(); val iv = buildHelp()
     val picker = buildAppPicker()
+    val traffic = buildTraffic()
     pages = listOf(hv, av, lv, sv, iv)
-    val frame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); pages.forEach { addView(it) }; addView(picker) }
+    val frame = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f); pages.forEach { addView(it) }; addView(picker); addView(traffic) }
     setContentView(LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg); addView(frame); addView(buildNav()) })
     show(0)
     save()
     askBackground()
+    // start animation, only on a real app start (not when the theme is switched)
+    if (b == null && !splashDone) {
+      splashDone = true
+      val sp = SplashView(this, dark)
+      addContentView(sp, ViewGroup.LayoutParams(-1, -1))
+      sp.play { (sp.parent as? ViewGroup)?.removeView(sp) }
+    }
   }
 
   override fun onPause() {
@@ -1263,6 +1274,209 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     if (!::appPickV.isInitialized || appPickV.visibility != View.VISIBLE) return
     appPickV.visibility = View.GONE
     updateSettingSummaries()
+  }
+
+  // ---------- Traffic monitor ----------
+  private class TrafItem(val uid: Int, val pkg: String?, val name: String, val rx: Long, val tx: Long, val live: Long)
+
+  private lateinit var trafV: LinearLayout
+  private lateinit var trafBody: LinearLayout
+  private lateinit var trafNote: TextView
+  private lateinit var trafTabs: List<TextView>
+  private lateinit var trafPeriods: List<TextView>
+  private var trafTab = 0
+  private var trafMin = 60
+  private var trafStart = 0L
+  private var trafTick = 0
+  private var trafBusy = false
+  private val trafPrev = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+  private val trafIcons = java.util.concurrent.ConcurrentHashMap<String, Drawable>()
+
+  private fun fmtBytes(b: Long): String = when {
+    b < 1024L -> "$b B"
+    b < 1024L * 1024L -> String.format("%.0f KB", b / 1024.0)
+    b < 1024L * 1024L * 1024L -> String.format("%.1f MB", b / 1048576.0)
+    else -> String.format("%.2f GB", b / 1073741824.0)
+  }
+
+  private fun hasUsageAccess(): Boolean = try {
+    val ops = getSystemService(android.app.AppOpsManager::class.java)
+    ops.checkOpNoThrow(android.app.AppOpsManager.OPSTR_GET_USAGE_STATS, android.os.Process.myUid(), packageName) == android.app.AppOpsManager.MODE_ALLOWED
+  } catch (e: Exception) { false }
+
+  private fun styleTraffic() {
+    trafTabs.forEachIndexed { i, t -> t.background = rr(if (i == trafTab) acc else fieldC, 14); t.setTextColor(if (i == trafTab) ink else fg) }
+    val mins = listOf(10, 60, 1440)
+    trafPeriods.forEachIndexed { i, t -> t.background = rr(if (mins[i] == trafMin) tintBg(acc, 0x33) else fieldC, 12); t.setTextColor(if (mins[i] == trafMin) acc else sub) }
+    trafPeriods.forEach { it.visibility = if (trafTab == 0) View.VISIBLE else View.GONE }
+  }
+
+  private fun buildTraffic(): View {
+    val v = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL; setBackgroundColor(bg); visibility = View.GONE; isClickable = true
+      setPadding(dp(16), dp(22), dp(16), dp(8))
+    }
+    v.addView(tv("‹  Settings", 15f, acc, true).apply {
+      background = rr(fieldC, 20); setPadding(dp(16), dp(9), dp(16), dp(9)); setOnClickListener { closeTraffic() }
+      layoutParams = LinearLayout.LayoutParams(-2, -2); pressable(this)
+    })
+    v.addView(tv("Traffic monitor", 26f, fg, true).apply { layoutParams = lp(14) })
+    trafNote = tv("", 12.5f, sub).apply { layoutParams = lp(2) }
+    v.addView(trafNote)
+    trafTabs = listOf("Apps", "Sites").mapIndexed { i, t ->
+      TextView(this).apply {
+        text = t; textSize = 14f; gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD)
+        layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { setMargins(dp(3), 0, dp(3), 0) }
+        setOnClickListener { trafTab = i; trafPrev.clear(); styleTraffic(); trafBody.removeAllViews(); updateTraffic() }
+        pressable(this)
+      }
+    }
+    v.addView(row(*trafTabs.toTypedArray()).apply { layoutParams = lp(14) })
+    val labels = listOf("Last 10 min", "Last hour", "Last 24 h")
+    val mins = listOf(10, 60, 1440)
+    trafPeriods = labels.mapIndexed { i, t ->
+      TextView(this).apply {
+        text = t; textSize = 12.5f; gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD)
+        layoutParams = LinearLayout.LayoutParams(0, dp(34), 1f).apply { setMargins(dp(3), 0, dp(3), 0) }
+        setOnClickListener { trafMin = mins[i]; trafStart = System.currentTimeMillis() - trafMin * 60_000L; trafPrev.clear(); styleTraffic(); updateTraffic() }
+        pressable(this)
+      }
+    }
+    v.addView(row(*trafPeriods.toTypedArray()).apply { layoutParams = lp(10) })
+    trafBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    v.addView(ScrollView(this).apply {
+      isVerticalScrollBarEnabled = false; addView(trafBody)
+      layoutParams = LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(8) }
+    })
+    trafV = v
+    return v
+  }
+
+  private fun openTraffic() {
+    trafTab = 0; trafPrev.clear(); trafTick = 0
+    trafStart = System.currentTimeMillis() - trafMin * 60_000L
+    styleTraffic(); trafBody.removeAllViews()
+    trafV.visibility = View.VISIBLE
+    trafV.alpha = 0f; trafV.translationY = dp(24).toFloat()
+    trafV.animate().alpha(1f).translationY(0f).setDuration(220).start()
+    updateTraffic()
+  }
+
+  private fun closeTraffic() {
+    if (!::trafV.isInitialized || trafV.visibility != View.VISIBLE) return
+    trafV.visibility = View.GONE
+  }
+
+  private fun updateTraffic() {
+    if (trafTab == 1) { renderSites(); return }
+    if (!hasUsageAccess()) { renderNeedUsage(); return }
+    if (trafBusy) return
+    trafBusy = true
+    val start = trafStart
+    Thread {
+      var items: List<TrafItem> = emptyList()
+      try { items = queryApps(start) } catch (e: Throwable) { }
+      runOnUiThread { trafBusy = false; if (trafV.visibility == View.VISIBLE && trafTab == 0) renderApps(items) }
+    }.start()
+  }
+
+  /** Bytes per app since [start] (Wi-Fi + mobile). The VPN traffic is counted for the app that really sent it. */
+  private fun queryApps(start: Long): List<TrafItem> {
+    val nsm = getSystemService(Context.NETWORK_STATS_SERVICE) as android.app.usage.NetworkStatsManager
+    val end = System.currentTimeMillis() + 60_000L
+    val rx = HashMap<Int, Long>(); val tx = HashMap<Int, Long>()
+    for (type in intArrayOf(android.net.ConnectivityManager.TYPE_WIFI, android.net.ConnectivityManager.TYPE_MOBILE)) {
+      try {
+        val st = nsm.querySummary(type, null, start, end)
+        val bk = android.app.usage.NetworkStats.Bucket()
+        while (st.hasNextBucket()) {
+          st.getNextBucket(bk)
+          rx[bk.uid] = (rx[bk.uid] ?: 0L) + bk.rxBytes
+          tx[bk.uid] = (tx[bk.uid] ?: 0L) + bk.txBytes
+        }
+        st.close()
+      } catch (e: Exception) { }
+    }
+    val pm = packageManager
+    val out = ArrayList<TrafItem>()
+    for (uid in rx.keys + tx.keys.filter { !rx.containsKey(it) }) {
+      val r = rx[uid] ?: 0L; val t = tx[uid] ?: 0L
+      if (r + t <= 0L) continue
+      val total = r + t
+      val live = (total - (trafPrev[uid] ?: total)).coerceAtLeast(0L)
+      trafPrev[uid] = total
+      var pk: String? = null
+      var name: String
+      when (uid) {
+        -4 -> name = "Removed apps"
+        -5 -> name = "Hotspot / tethering"
+        0, 1000 -> name = "Android system"
+        else -> {
+          pk = try { pm.getPackagesForUid(uid)?.firstOrNull() } catch (e: Exception) { null }
+          name = pk ?: "uid $uid"
+          if (pk != null) {
+            try { name = pm.getApplicationLabel(pm.getApplicationInfo(pk, 0)).toString() } catch (e: Exception) { }
+            if (!trafIcons.containsKey(pk)) { val ic = try { pm.getApplicationIcon(pk) } catch (e: Exception) { null }; if (ic != null) trafIcons[pk] = ic }
+          }
+        }
+      }
+      out.add(TrafItem(uid, pk, name, r, t, live))
+    }
+    out.sortByDescending { it.rx + it.tx }
+    return out.take(60)
+  }
+
+  private fun trafRow(icon: Drawable?, title: String, line2: String, right: String, live: Boolean): View {
+    val ic = ImageView(this).apply { layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)); setImageDrawable(icon) }
+    val name = tv(title, 14.5f, fg, true).apply { setSingleLine(); ellipsize = android.text.TextUtils.TruncateAt.END }
+    val sec = tv(line2, 11.5f, sub).apply { setSingleLine(); ellipsize = android.text.TextUtils.TruncateAt.END }
+    val mid = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12); rightMargin = dp(8) }
+      addView(name); addView(sec)
+    }
+    val r = tv(right, 12.5f, if (live) 0xFF10B981.toInt() else acc, true)
+    return LinearLayout(this).apply {
+      orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+      setPadding(dp(4), dp(8), dp(4), dp(8))
+      addView(ic); addView(mid); addView(r)
+    }
+  }
+
+  private fun renderApps(items: List<TrafItem>) {
+    trafNote.text = "Data used since the chosen time. A green speed means the app is using data right now (in the last 3 seconds)."
+    trafBody.removeAllViews()
+    if (items.isEmpty()) { trafBody.addView(tv("No traffic found yet.", 13f, sub).apply { layoutParams = lp(10) }); return }
+    val live = items.filter { it.live > 0 }
+    items.forEach { it0 ->
+      val spd = if (it0.live > 0) fmtBytes(it0.live / 3) + "/s" else fmtBytes(it0.rx + it0.tx)
+      trafBody.addView(trafRow(it0.pkg?.let { p -> trafIcons[p] }, it0.name,
+        "↓ " + fmtBytes(it0.rx) + "   ↑ " + fmtBytes(it0.tx) + "   ·   " + fmtBytes(it0.rx + it0.tx), (if (it0.live > 0) "● " else "") + spd, it0.live > 0))
+    }
+    if (live.isNotEmpty()) trafNote.text = "● Active now: " + live.take(3).joinToString(", ") { it.name }
+  }
+
+  private fun renderNeedUsage() {
+    trafNote.text = "Usage access is needed to see data per app."
+    trafBody.removeAllViews()
+    trafBody.addView(tv("Allow \"Usage access\" for Mollad DNS. Android only shows per-app data to apps that have this permission. Nothing leaves your phone.", 13.5f, fg).apply { layoutParams = lp(10) })
+    trafBody.addView(btn("Allow usage access", acc) {
+      try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS, Uri.parse("package:$packageName"))) }
+      catch (e: Exception) { try { startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) } catch (x: Exception) { toast("Open Settings > Apps > Special access > Usage access") } }
+    }.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(46)).apply { topMargin = dp(12) } })
+  }
+
+  private fun renderSites() {
+    val list = TrafficLog.top(80)
+    trafNote.text = if (VpnSvc.running) "Websites looked up through the VPN (newest first). Android does not tell which app asked, but a name you do not know here is a good hint." else "Connect the VPN first. Sites are collected while it is connected."
+    trafBody.removeAllViews()
+    if (list.isEmpty()) { trafBody.addView(tv("Nothing yet.", 13f, sub).apply { layoutParams = lp(10) }); return }
+    val now = System.currentTimeMillis()
+    trafBody.addView(tv("Clear list", 12.5f, acc, true).apply { setPadding(dp(4), dp(4), dp(4), dp(8)); setOnClickListener { TrafficLog.clear(); renderSites() } })
+    list.forEach { s ->
+      val ago = (now - s.last) / 1000
+      val t = if (ago < 60) "${ago}s ago" else if (ago < 3600) "${ago / 60}m ago" else "${ago / 3600}h ago"
+      trafBody.addView(trafRow(null, s.name, "last seen $t", "${s.count}x", ago < 5))
+    }
   }
 
   // ---------- VPNJantit auto account (the work itself runs in the background service) ----------
