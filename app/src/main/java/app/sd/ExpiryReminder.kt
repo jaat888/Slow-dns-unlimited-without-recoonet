@@ -9,12 +9,13 @@ import android.content.Intent
 /** Tells you before a VPNJantit account runs out ("Settings > Reminders"). Checks by itself in the background, also after a phone restart. */
 class ExpiryReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent?) {
+        AutoOff.once(c)
         try { check(c) } catch (e: Throwable) { }
         schedule(c)
     }
 
     companion object {
-        private fun on(c: Context) = c.getSharedPreferences("a", 0).getBoolean("expy", true)
+        private fun on(c: Context) = c.getSharedPreferences("a", 0).getBoolean("expy", false)
         private fun leadMs(c: Context) = c.getSharedPreferences("a", 0).getInt("expyh", 3).coerceIn(1, 48) * 3_600_000L
 
         fun check(c: Context) {

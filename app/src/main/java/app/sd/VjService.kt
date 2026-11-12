@@ -690,7 +690,7 @@ class VjService : Service() {
         val since = if (t0 > 0L) System.currentTimeMillis() - (SystemClock.elapsedRealtime() - t0) else System.currentTimeMillis()
         if (Notif.hidden(this)) return Notification.Builder(this, Notif.CH_HIDE)
             .setSmallIcon(R.drawable.ic_stat).setContentTitle("VPNJantit account").setContentText(text)
-            .setOngoing(true).setShowWhen(false).setVisibility(Notification.VISIBILITY_SECRET).setContentIntent(Notif.open(this)).build()
+            .setOngoing(true).setShowWhen(false).setVisibility(Notification.VISIBILITY_SECRET).setContentIntent(Notif.open(this)).build().let { Notif.own(it) }
         return Notification.Builder(this, Notif.CH_WORK)
             .setWhen(since).setShowWhen(true).setUsesChronometer(true)
             .setSmallIcon(R.drawable.ic_stat).setLargeIcon(Notif.logo(this))

@@ -27,9 +27,8 @@ object Notif {
         nm.createNotificationChannel(alert)
     }
 
-    /** Large notification picture: the logo in the current theme (dark or light). */
+    /** Large notification picture: always the light (white/blue) logo. */
     fun logo(c: Context): android.graphics.drawable.Icon {
-        val dark = try { c.getSharedPreferences("a", 0).getBoolean("dark", false) } catch (e: Throwable) { false }
         return android.graphics.drawable.Icon.createWithResource(c, R.drawable.logo_light)
     }
 

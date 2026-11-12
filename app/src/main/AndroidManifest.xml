@@ -14,12 +14,9 @@
       <category android:name="android.intent.category.LAUNCHER"/>
     </intent>
   </queries>
-  <application android:label="Mollad DNS" android:icon="@mipmap/ic_light" android:roundIcon="@mipmap/ic_light" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+  <application android:label="Mollad DNS" android:icon="@mipmap/ic_app" android:roundIcon="@mipmap/ic_app" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
     <activity android:name=".MainActivity" android:exported="false" android:label="Mollad DNS"/>
-    <activity-alias android:name=".DarkAlias" android:targetActivity=".MainActivity" android:exported="true" android:enabled="false" android:label="Mollad DNS" android:icon="@mipmap/ic_light">
-      <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
-    </activity-alias>
-    <activity-alias android:name=".LightAlias" android:targetActivity=".MainActivity" android:exported="true" android:enabled="true" android:label="Mollad DNS" android:icon="@mipmap/ic_light">
+    <activity-alias android:name=".MainAlias" android:targetActivity=".MainActivity" android:exported="true" android:enabled="true" android:label="Mollad DNS" android:icon="@mipmap/ic_app">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity-alias>
     <!-- Creates the VPNJantit account in the background (own process, so the VPN stays safe if the WebView crashes) -->

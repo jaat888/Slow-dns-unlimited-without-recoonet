@@ -780,7 +780,7 @@ class MainActivity : Activity() {
     val sb = card(14); sb.addView(secTitle("Battery saver"))
     val bsSw = tint(Switch(this).apply { isChecked = P.getBoolean("bs", false) })
     bsSw.setOnCheckedChangeListener { _, c -> applyBattery(c) }
-    helpNotes.add("Battery saver mode" to "One tap sets everything for the lowest battery use: low-load dnstt, at most 5 tunnels, no keep-alive packets, health check OFF (nothing is sent to test the tunnels; a tunnel that really breaks is still replaced), home ping every 60 seconds, no rotation or session break, no debug logs, and the phone may sleep (no wake lock). Turning it OFF puts your old values back. Reconnect the VPN to apply it fully. Auto-renew of VPNJantit accounts stays as you set it.")
+    helpNotes.add("Battery saver mode" to "One tap sets everything for the lowest battery use: low-load dnstt, at most 5 tunnels, no keep-alive packets, health check OFF (nothing is sent to test the tunnels; a tunnel that really breaks is still replaced), home ping OFF (the chip only says Online / Offline), no rotation or session break, no debug logs, and the phone may sleep (no wake lock). Turning it OFF puts your old values back. Reconnect the VPN to apply it fully. VPNJantit auto-renew and the expiry reminder are OFF by default and stay as you set them.")
     sb.addView(row(settingLabel("Battery saver mode"), bsSw).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(12) })
     sb.addView(tv("Tap ON and everything below is set for the lowest battery use: at most 5 tunnels, low-load dnstt, no keep-alive packets, no health check, no debug logs. Turn OFF to get your old values back. Reconnect the VPN to apply it fully.", 12f, sub).apply { layoutParams = lp(2) })
     swRow(sb, "Let the phone sleep (no wake lock)", "ON: the VPN does not keep the phone awake. This is the biggest battery saver. With the screen off the tunnels may answer a little later. OFF: the phone is kept awake so the VPN is always quick. Applies at next START.", "nowl", false) { if (it) "Phone may sleep (next START)" else "Phone kept awake (next START)" }
@@ -854,12 +854,12 @@ class MainActivity : Activity() {
     col.addView(s4)
 
     val s9 = card(); s9.addView(secTitle("Reminders"))
-    swRow(s9, "Account expiry reminder", "Shows a notification before an account made by the app runs out, so you can renew it in time. Works in the background and after a phone restart.", "expy", true) { if (it) "Expiry reminder ON" else "Expiry reminder OFF" }
+    swRow(s9, "Account expiry reminder", "Shows a notification before an account made by the app runs out, so you can renew it in time. Works in the background and after a phone restart.", "expy", false) { if (it) "Expiry reminder ON" else "Expiry reminder OFF" }
     numRow(s9, "Remind before (hours)", "How many hours before the end the reminder comes. Applies immediately.", "expyh", 3, 1, 48)
     col.addView(s9)
 
     val s8 = card(); s8.addView(secTitle("Ping"))
-    numRow(s8, "Ping every (seconds)", "How often the chip on the Home screen measures the ping. Online it is the ping through the tunnel; while the VPN is off it is the phone's own internet (real ping). Lower = faster updates but a little more data. Applies immediately.", "pingint", 4, 1, 60)
+    numRow(s8, "Ping every (seconds, 0 = off)", "How often the chip on the Home screen measures the ping. 0 turns the ping off completely (no packets are sent). Online it is the ping through the tunnel; while the VPN is off it is the phone's own internet (real ping). Lower = faster updates but a little more data. Applies immediately.", "pingint", 4, 0, 60)
     col.addView(s8)
 
     val s7 = card(); s7.addView(secTitle("Logs"))
@@ -911,7 +911,7 @@ class MainActivity : Activity() {
       for (k in ints) prev.put(k, if (P.contains(k)) P.getInt(k, 0) else JSONObject.NULL)
       e.putString("bs_prev", prev.toString()).putBoolean("bs", true)
       e.putBoolean("low", true).putBoolean("rot", false).putBoolean("dbg", false).putBoolean("nowl", true).putBoolean("auto", false)
-      e.putInt("pingint", 60).putInt("sbreak", 0).putInt("kal", 0)
+      e.putInt("pingint", 0).putInt("sbreak", 0).putInt("kal", 0)
     } else {
       val prev = try { JSONObject(P.getString("bs_prev", "{}") ?: "{}") } catch (x: Exception) { JSONObject() }
       for (k in bools) if (prev.isNull(k)) e.remove(k) else e.putBoolean(k, prev.optBoolean(k))
@@ -924,20 +924,8 @@ class MainActivity : Activity() {
     recreate()
   }
 
-  private fun icon(@Suppress("UNUSED_PARAMETER") theme: Boolean) {
-    val d = false   // one icon only (the new light logo): the old dark / green one is gone everywhere
-    val pm = packageManager
-    fun set(n: String, en: Boolean) = pm.setComponentEnabledSetting(android.content.ComponentName(this, "app.sd.$n"),
-      if (en) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP)
-    try {
-      val want = if (d) "DarkAlias" else "LightAlias"
-      val cur = pm.getComponentEnabledSetting(android.content.ComponentName(this, "app.sd.$want"))
-      val other = pm.getComponentEnabledSetting(android.content.ComponentName(this, "app.sd." + (if (d) "LightAlias" else "DarkAlias")))
-      val wantOn = cur == PackageManager.COMPONENT_ENABLED_STATE_ENABLED || (cur == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && !d)
-      val otherOff = other == PackageManager.COMPONENT_ENABLED_STATE_DISABLED || (other == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && d)
-      if (!(wantOn && otherOff)) { set(want, true); set(if (d) "LightAlias" else "DarkAlias", false) }
-    } catch (e: Exception) {}
-  }
+  /** One launcher icon only (the light logo). Nothing to switch any more. */
+  private fun icon(@Suppress("UNUSED_PARAMETER") theme: Boolean) { }
 
   // ---------- Help ----------
   private fun helpCard(col: LinearLayout, title: String, body: String) {
@@ -1169,6 +1157,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
   // ---------- Lifecycle ----------
   override fun onCreate(b: Bundle?) {
     super.onCreate(b)
+    AutoOff.once(this)
     // The log is kept on disk; Java crash stacks are written to it too
     try {
       LogBus.setup(filesDir)
@@ -1345,7 +1334,9 @@ The Connect button at the bottom connects or disconnects. In the card you see up
   /** Measures the real tunnel ping every few seconds (a DNS question sent through the app's SOCKS port). */
   private fun pingTick() {
     val now = System.currentTimeMillis()
-    if (pingBusy || now - pingT < P.getInt("pingint", 4).coerceIn(1, 60) * 1000L) return
+    val pi = P.getInt("pingint", 4).coerceIn(0, 60)
+    if (pi == 0) { if (pingMs != -1) { pingMs = -1; paintChip() }; return }
+    if (pingBusy || now - pingT < pi * 1000L) return
     val port = VpnSvc.socksPortPub
     if (port <= 0) return
     pingBusy = true; pingT = now
@@ -1363,7 +1354,9 @@ The Connect button at the bottom connects or disconnects. In the card you see up
   /** VPN is off: the chip shows the ping of the phone's own internet (no tunnel), so you see what the net really gives. */
   private fun realPingTick() {
     val now = System.currentTimeMillis()
-    if (realBusy || now - realT < P.getInt("pingint", 4).coerceIn(1, 60) * 1000L) return
+    val pi = P.getInt("pingint", 4).coerceIn(0, 60)
+    if (pi == 0) { if (realMs != -1) { realMs = -1; paintChip() }; return }
+    if (realBusy || now - realT < pi * 1000L) return
     realBusy = true; realT = now
     val dns = (P.getString("fdns", "1.1.1.1") ?: "1.1.1.1").trim().ifBlank { "1.1.1.1" }
     Thread {

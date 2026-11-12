@@ -14,6 +14,7 @@ import android.content.Intent
  */
 class VjReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent?) {
+        AutoOff.once(c)
         try { check(c) } catch (e: Throwable) { }
         schedule(c)
     }

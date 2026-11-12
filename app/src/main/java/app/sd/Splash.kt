@@ -28,7 +28,7 @@ import kotlin.math.min
 
 /**
  * The app logo: an "M" with a signal (a dot and two arcs) rising from its middle. Drawn with a canvas so it can be animated.
- * Same shape as the launcher icon (res/drawable/fg_dark.xml).
+ * Same shape as the launcher icon (res/drawable/fg_light.xml).
  */
 class LogoView(ctx: Context, private val dark: Boolean) : View(ctx) {
     /** 0..1 build-up: the M is drawn, then the dot pops, then the arcs sweep out. */
