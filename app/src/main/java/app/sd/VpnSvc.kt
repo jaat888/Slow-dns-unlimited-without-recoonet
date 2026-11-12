@@ -488,7 +488,7 @@ class VpnSvc : VpnService() {
       val chk = pr.getInt("chk", 5).coerceIn(1, 60) * 1000L
       val need = pr.getInt("miss", 2).coerceIn(1, 10)
       val sbreak = pr.getInt("sbreak", 0).coerceIn(0, 7200) * 1000L
-      nap(if (auto) chk else 2000L, g)
+      nap(if (auto) chk else 10_000L, g)   // health check OFF: only a free local look (is the process / session still alive)
       if (!alive(g)) break
       val dead = !l.p.isAlive || !l.s.isConnected
       val timeUp = sbreak > 0 && System.currentTimeMillis() - linkSince >= sbreak

@@ -223,6 +223,8 @@ object VjManager {
 
     private fun schedule(c: Context, ms: Long, why: String) {
         val p = VjStore.prefs(c)
+        // Auto-renew OFF: nothing is planned, no "next try" line and no alarm (the user creates accounts by hand)
+        if (!p.getBoolean("vj_auto", false)) { LogBus.add("VPNJantit: $why"); ui(); return }
         val at = System.currentTimeMillis() + ms + (0..40_000).random()
         p.edit().putLong("vj_next", at).apply()
         VjReceiver.schedule(c)
