@@ -30,6 +30,7 @@ import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -66,6 +67,7 @@ class VjService : Service() {
     private var running = false
     private var done = false
     private var server = "in6"
+    private var serverLabel: String? = null
     private var user = ""
     private var pass = ""
     private var lastSaid = ""
@@ -118,6 +120,7 @@ class VjService : Service() {
         try { startForeground(NID, workNotif("Starting...")) } catch (e: Throwable) { }
         if (running) return START_NOT_STICKY
         server = i?.getStringExtra(VpnJantit.EXTRA_SERVER)?.takeIf { it.isNotBlank() } ?: "in6"
+        serverLabel = i?.getStringExtra(VpnJantit.EXTRA_LABEL)?.takeIf { it.isNotBlank() }
         running = true
         if (!Settings.canDrawOverlays(this)) {
             finishFail("Allow \"Display over other apps\" for Mollad DNS, then try again", 0L)
@@ -137,6 +140,7 @@ class VjService : Service() {
         user = randomName()
         pass = randomPass()
         startedAt = SystemClock.elapsedRealtime()
+        t0 = startedAt
         lastTick = startedAt
         lastGood = startedAt
         buildUi()
@@ -155,14 +159,56 @@ class VjService : Service() {
     }
 
     private fun pillBtn(ctx: Context, t: String, bg: Int, fg: Int, f: () -> Unit) = TextView(ctx).apply {
-        text = t; textSize = 14f; gravity = Gravity.CENTER; setTextColor(fg); setTypeface(typeface, Typeface.BOLD)
+        text = t; textSize = 13.5f; gravity = Gravity.CENTER; setTextColor(fg); setTypeface(typeface, Typeface.BOLD)
+        setSingleLine(); ellipsize = android.text.TextUtils.TruncateAt.END; setPadding(dp(6), 0, dp(6), 0)
         background = rr(bg, 14)
         layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(3), 0, dp(3), 0) }
         setOnClickListener { f() }
     }
 
+    // colours of the overlay (they follow the app's Dark / Light setting)
+    private var cAcc = 0
+    private var cField = 0
+    private var cSub = 0
+    private var cFg = 0
+    private val stepTv = ArrayList<TextView>()
+    private var stepNow = -1
+    private var t0 = 0L
+    private var lastInfo = ""
+    private lateinit var timerTv: TextView
+    private lateinit var hintTv: TextView
+
+    private fun fmtDur(ms: Long): String {
+        val s = (ms / 1000L).coerceAtLeast(0L)
+        return (s / 60L).toString() + ":" + (s % 60L).toString().padStart(2, '0')
+    }
+
+    private fun setStep(i: Int) {
+        if (!built || i == stepNow) return
+        stepNow = i
+        stepTv.forEachIndexed { k, t ->
+            when {
+                k == i -> { t.background = rr(cAcc, 12); t.setTextColor(Color.WHITE) }
+                k < i -> { t.background = rr((cAcc and 0x00FFFFFF) or 0x26000000, 12); t.setTextColor(cAcc) }
+                else -> { t.background = rr(cField, 12); t.setTextColor(cSub) }
+            }
+        }
+    }
+
+    private fun waitHint(): String {
+        val took = getSharedPreferences("a", 0).getLong("vj_took", 0L)
+        return if (took > 0L) "Last time this took about " + fmtDur(took) + " (minutes:seconds)." else "This usually takes 1 to 3 minutes."
+    }
+
     private fun buildUi() {
-        val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault_Light_NoActionBar)
+        val pr = getSharedPreferences("a", 0)
+        val dark = pr.getBoolean("dark", false)
+        val cardC = if (dark) 0xFF141B30.toInt() else Color.WHITE
+        cFg = if (dark) 0xFFEAF0FF.toInt() else 0xFF0F1630.toInt()
+        cSub = if (dark) 0xFF8E9ABB.toInt() else 0xFF6A7490.toInt()
+        cField = if (dark) 0xFF1C2542.toInt() else 0xFFEEF2FC.toInt()
+        cAcc = if (dark) 0xFF3B82F6.toInt() else 0xFF2563EB.toInt()
+        val ctx = ContextThemeWrapper(this, if (dark) android.R.style.Theme_DeviceDefault_NoActionBar else android.R.style.Theme_DeviceDefault_Light_NoActionBar)
         root = FrameLayout(ctx)
         root.alpha = 0f
 
@@ -173,51 +219,97 @@ class VjService : Service() {
         holder.outlineProvider = ViewOutlineProvider.BACKGROUND
         web = WebView(ctx)
         holder.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        val hh = (resources.displayMetrics.heightPixels * 0.6f).toInt().coerceAtLeast(dp(400))
-        val hp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, hh, Gravity.BOTTOM)
-        hp.setMargins(dp(14), 0, dp(14), dp(22))
-        root.addView(holder, hp)
 
         card = LinearLayout(ctx)
         card.orientation = LinearLayout.VERTICAL
-        card.background = rr(Color.WHITE, 22)
+        card.background = rr(cardC, 24, if (dark) 0xFF263052.toInt() else 0xFFE3E9F6.toInt())
         card.setPadding(dp(18), dp(16), dp(18), dp(14))
-        card.elevation = dp(6).toFloat()
+        card.elevation = dp(8).toFloat()
 
+        // header: logo, title + server, running time
+        val head = LinearLayout(ctx)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        val logo = ImageView(ctx)
+        logo.setImageResource(if (dark) R.drawable.logo_dark else R.drawable.logo_light)
+        logo.clipToOutline = true
+        logo.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(11).toFloat()) }
+        }
+        head.addView(logo, LinearLayout.LayoutParams(dp(42), dp(42)))
+        val names = LinearLayout(ctx)
+        names.orientation = LinearLayout.VERTICAL
         val title = TextView(ctx)
         title.text = "VPNJantit account"
-        title.textSize = 18f
-        title.setTextColor(0xFF0F1630.toInt())
+        title.textSize = 17f
+        title.setTextColor(cFg)
         title.setTypeface(title.typeface, Typeface.BOLD)
-        card.addView(title)
-
-        val serverName = VpnJantit.SERVERS.firstOrNull { it.code == server }?.label ?: server
+        names.addView(title)
+        val serverName = serverLabel ?: VpnJantit.SERVERS.firstOrNull { it.code == server }?.label ?: server
         val srv = TextView(ctx)
         srv.text = serverName
         srv.textSize = 12f
-        srv.setTextColor(0xFF6A7490.toInt())
-        card.addView(srv)
+        srv.setTextColor(cSub)
+        srv.setSingleLine()
+        srv.ellipsize = android.text.TextUtils.TruncateAt.END
+        names.addView(srv)
+        head.addView(names, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(12); rightMargin = dp(8) })
+        timerTv = TextView(ctx)
+        timerTv.text = "0:00"
+        timerTv.textSize = 15f
+        timerTv.setTextColor(cAcc)
+        timerTv.setTypeface(timerTv.typeface, Typeface.BOLD)
+        timerTv.background = rr((cAcc and 0x00FFFFFF) or 0x26000000, 12)
+        timerTv.setPadding(dp(10), dp(5), dp(10), dp(5))
+        head.addView(timerTv)
+        card.addView(head)
+
+        // three steps: Check, Captcha, Create
+        stepTv.clear(); stepNow = -1
+        val steps = LinearLayout(ctx)
+        steps.orientation = LinearLayout.HORIZONTAL
+        for (n in listOf("1  Check", "2  Captcha", "3  Create")) {
+            val t = TextView(ctx)
+            t.text = n
+            t.textSize = 11.5f
+            t.gravity = Gravity.CENTER
+            t.setSingleLine()
+            t.setTypeface(t.typeface, Typeface.BOLD)
+            t.setPadding(dp(4), dp(7), dp(4), dp(7))
+            steps.addView(t, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(2), 0, dp(2), 0) })
+            stepTv.add(t)
+        }
+        card.addView(steps, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(14) })
 
         val bar = ProgressBar(ctx, null, android.R.attr.progressBarStyleHorizontal)
         bar.isIndeterminate = true
-        bar.indeterminateTintList = ColorStateList.valueOf(0xFF2563EB.toInt())
+        bar.indeterminateTintList = ColorStateList.valueOf(cAcc)
         card.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(4)).apply { topMargin = dp(12) })
 
         statusTv = TextView(ctx)
         statusTv.textSize = 15f
-        statusTv.setTextColor(0xFF0F1630.toInt())
+        statusTv.setTextColor(cFg)
         statusTv.text = "Working..."
-        card.addView(statusTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+        card.addView(statusTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+
+        hintTv = TextView(ctx)
+        hintTv.textSize = 12f
+        hintTv.setTextColor(cSub)
+        hintTv.text = waitHint()
+        card.addView(hintTv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
 
         val btns = LinearLayout(ctx)
         btns.orientation = LinearLayout.HORIZONTAL
-        btns.addView(pillBtn(ctx, "Continue in background", 0xFFEEF2FC.toInt(), 0xFF2563EB.toInt()) { hideByUser() })
-        btns.addView(pillBtn(ctx, "Cancel", 0xFFFDECEC.toInt(), 0xFFDC2626.toInt()) { finishCancelled() })
+        btns.addView(pillBtn(ctx, "Run in background", cField, cAcc) { hideByUser() })
+        btns.addView(pillBtn(ctx, "Cancel", if (dark) 0xFF3A1D24.toInt() else 0xFFFDECEC.toInt(), 0xFFEF4444.toInt()) { finishCancelled() })
         card.addView(btns, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(14) })
 
-        val cp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP)
-        cp.setMargins(dp(14), dp(44), dp(14), 0)
-        root.addView(card, cp)
+        // the card on top, the captcha box under it (it takes the rest of the screen)
+        val col = LinearLayout(ctx)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        col.addView(holder, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(10) })
+        root.addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { setMargins(dp(14), dp(40), dp(14), dp(20)) })
 
         val lp = WindowManager.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
@@ -230,6 +322,7 @@ class VjService : Service() {
         wlp = lp
         wm?.addView(root, lp)
         built = true
+        setStep(0)
     }
 
     private fun setTouchable(on: Boolean) {
@@ -260,11 +353,23 @@ class VjService : Service() {
                 return !(host == "vpnjantit.com" || host.endsWith(".vpnjantit.com"))
             }
 
-            // Videos (ads) are not downloaded: saves data and removes the sound. Scripts and images stay untouched,
-            // because the site refuses to work when it thinks an ad-blocker is running.
+            // Lite mode: the account page loads much faster and uses far less data.
+            // Dropped: videos, ALL images (except the captcha's own), fonts, and ad pop-up frames from other sites.
+            // Kept untouched: every script, because the site refuses to work when it thinks an ad-blocker is running.
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                val u = request.url.toString().substringBefore('?').lowercase()
-                if (u.endsWith(".mp4") || u.endsWith(".webm") || u.endsWith(".m3u8") || u.endsWith(".mpd") || u.endsWith(".mov")) {
+                val url = request.url
+                val u = url.toString().substringBefore('?').lowercase()
+                val host = (url.host ?: "").lowercase()
+                val keep = host == "vpnjantit.com" || host.endsWith(".vpnjantit.com") ||
+                    host == "hcaptcha.com" || host.endsWith(".hcaptcha.com") ||
+                    host == "cloudflare.com" || host.endsWith(".cloudflare.com")
+                val accept = (request.requestHeaders?.get("Accept") ?: "").lowercase()
+                val video = u.endsWith(".mp4") || u.endsWith(".webm") || u.endsWith(".m3u8") || u.endsWith(".mpd") || u.endsWith(".mov")
+                val font = u.endsWith(".woff") || u.endsWith(".woff2") || u.endsWith(".ttf") || u.endsWith(".otf")
+                val image = accept.contains("image/") && !accept.contains("text/html") &&
+                    !(host == "hcaptcha.com" || host.endsWith(".hcaptcha.com") || host == "cloudflare.com" || host.endsWith(".cloudflare.com"))
+                val adFrame = !request.isForMainFrame && !keep && accept.contains("text/html")
+                if (video || font || image || adFrame) {
                     return WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
                 }
                 return null
@@ -285,13 +390,14 @@ class VjService : Service() {
         if (revealed) startedAt += now - lastTick
         lastTick = now
         if (now - startedAt > 240_000L) {
-            finishFail("Timed out: the account was not created", 0L)
+            finishFail("Timed out: the account was not created in 4 minutes", 0L)
             return
         }
         if (revealed && now - revealedAt > 300_000L) {
             finishFail("The captcha was not solved in time", 0L)
             return
         }
+        try { if (built) { timerTv.text = fmtDur(now - t0); setStep(if (revealed) 1 else if (clicks > 0) 2 else 0) } } catch (e: Exception) { }
         evalJs(MUTE_JS)
         if (revealed && !gateOpen) evalJs(CROP_JS) else evalJs(DISMISS_JS)
         // A probe that never answered (WebView frozen) must not block the machine forever
@@ -334,6 +440,9 @@ class VjService : Service() {
         val err = o.optString("err")
         if (formSince == 0L) formSince = now
         lastGood = now
+        val alert = o.optString("alert")
+        lastInfo = "cloudflare=" + (if (ts.isBlank()) "none" else ts) + ", captcha=" + (if (hc) "open" else if (hcDone) "done" else "none") +
+            ", fields=" + hasInputs + ", clicks=" + clicks + (if (alert.isNotBlank()) ", site says: " + alert else "")
 
         // 1) Error text from the site. It must stay for 3 checks in a row, so a flash of text does not fail the job.
         if (err.isNotBlank() && (clicks > 0 || !hasInputs) && !hc) errStreak++ else errStreak = 0
@@ -399,6 +508,7 @@ class VjService : Service() {
             .putExtra(VpnJantit.R_USER, u)
             .putExtra(VpnJantit.R_PASS, p)
             .putExtra(VpnJantit.R_EXPIRES, exp)
+            .putExtra(VpnJantit.R_TOOK, SystemClock.elapsedRealtime() - t0)
         shutdown(data)
     }
 
@@ -434,6 +544,7 @@ class VjService : Service() {
         root.animate().cancel()
         root.animate().alpha(1f).setDuration(180).start()
         say(msg)
+        try { hintTv.text = "Only this check needs you. The rest continues by itself." } catch (e: Exception) { }
         Notif.alert(this, NID_CAPTCHA, "Captcha needs you", msg)
     }
 
@@ -463,6 +574,7 @@ class VjService : Service() {
         root.animate().cancel()
         root.animate().alpha(0f).setDuration(150).withEndAction { if (!revealed) root.setBackgroundColor(0) }.start()
         Notif.cancel(this, NID_CAPTCHA)
+        try { hintTv.text = waitHint() } catch (e: Exception) { }
         say("Continuing in the background...")
     }
 
@@ -485,7 +597,14 @@ class VjService : Service() {
             .putExtra(VpnJantit.R_OK, false)
             .putExtra(VpnJantit.EXTRA_SERVER, server)
             .putExtra(VpnJantit.R_ERROR, msg)
+            .putExtra(VpnJantit.R_DETAIL, failDetail())
             .putExtra(VpnJantit.R_RETRY_MS, retryMs))
+    }
+
+    /** Where it stopped and what the page looked like, so a failure is never just "failed". */
+    private fun failDetail(): String {
+        val took = if (t0 > 0L) fmtDur(SystemClock.elapsedRealtime() - t0) else "0:00"
+        return "after " + took + ", last step: " + lastSaid.ifBlank { "start" } + (if (lastInfo.isNotBlank()) " | " + lastInfo else "")
     }
 
     private fun finishCancelled() {
@@ -536,8 +655,10 @@ class VjService : Service() {
         val act = Notification.Action.Builder(
             Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "Cancel", cancelPi
         ).build()
+        val since = if (t0 > 0L) System.currentTimeMillis() - (SystemClock.elapsedRealtime() - t0) else System.currentTimeMillis()
         return Notification.Builder(this, Notif.CH_WORK)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setWhen(since).setShowWhen(true).setUsesChronometer(true)
+            .setSmallIcon(R.drawable.ic_stat).setLargeIcon(Notif.logo(this))
             .setContentTitle("VPNJantit account")
             .setContentText(text)
             .setOngoing(true)
@@ -606,8 +727,8 @@ class VjService : Service() {
             } catch (e: Exception) { }
         }
 
-        fun start(c: Context, server: String) {
-            c.startForegroundService(Intent(c, VjService::class.java).setAction(ACTION_START).putExtra(VpnJantit.EXTRA_SERVER, server))
+        fun start(c: Context, server: String, label: String = "") {
+            c.startForegroundService(Intent(c, VjService::class.java).setAction(ACTION_START).putExtra(VpnJantit.EXTRA_SERVER, server).putExtra(VpnJantit.EXTRA_LABEL, label))
         }
 
         fun clear(c: Context) {
@@ -636,10 +757,29 @@ class VjService : Service() {
   var st=document.getElementById('vj-crop');
   if(!st){ st=document.createElement('style'); st.id='vj-crop'; document.head.appendChild(st); }
   st.textContent='html,body{background:#fff !important;overflow:auto !important}'+
-    'ins,[id*="google_ads"],[class*="adsbygoogle"],[id*="aswift"],iframe:not([src*="hcaptcha.com"]):not([src*="challenges.cloudflare.com"]){display:none !important}'+
+    'ins,.adsbygoogle,[id*="google_ads"],[class*="adsbygoogle"],[id*="aswift"],[id^="div-gpt"],[data-anchor-status],[data-vignette-status],[data-ad-status],[class*="ad-container"],[id*="cookie"],[class*="cookie"],[class*="consent"],iframe:not([src*="hcaptcha.com"]):not([src*="challenges.cloudflare.com"]){display:none !important}'+
+    'html>*:not(head):not(body){display:none !important}'+
+    'body div[style*="position: fixed"]:not(:has(iframe[src*="hcaptcha.com"])):not(:has(iframe[src*="challenges.cloudflare.com"])):not(.h-captcha):not(.cf-turnstile){display:none !important}'+
     'body *{visibility:hidden !important}'+
     '.h-captcha,.h-captcha *,.cf-turnstile,.cf-turnstile *,iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"]{visibility:visible !important}'+
     '.h-captcha,.cf-turnstile{position:fixed !important;top:12px !important;left:50% !important;transform:translateX(-50%) !important;z-index:2147483647 !important;background:#fff !important}';
+  /* The site's own pop-up ad ("Free VPN access" with an X) sits on top of the captcha. It is a fixed element added by the ad script,
+     so every fixed / sticky element that does not hold the captcha is hidden, plus ad hosts that live in a shadow root. */
+  try{
+    var CAPQ='.h-captcha,.cf-turnstile,iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"]';
+    var els=document.body?document.body.querySelectorAll('*'):[];
+    for(var k=0;k<els.length;k++){
+      var x=els[k];
+      if(x.getAttribute('data-vjk')) continue;
+      var cs=getComputedStyle(x);
+      var hostAd=false;
+      if(x.shadowRoot && x.parentNode===document.body) hostAd=true;
+      if(cs.position!=='fixed' && cs.position!=='sticky' && !hostAd) continue;
+      if((x.matches&&x.matches(CAPQ)) || x.querySelector(CAPQ) || (x.closest&&x.closest('.h-captcha,.cf-turnstile'))) continue;
+      x.setAttribute('data-vjk','1');
+      x.style.setProperty('display','none','important');
+    }
+  }catch(err){}
   var e=document.querySelector('iframe[src*="hcaptcha.com"],.h-captcha,.cf-turnstile,iframe[src*="challenges.cloudflare.com"]');
   if(e){ e.scrollIntoView({block:'center'}); }
   return 'ok';
@@ -744,6 +884,10 @@ class VjService : Service() {
     if(L.length>3 && L.length<200 && /(server (is )?full|too many|already (exist|taken|used)|not available|limit reached|wait \d+ minute|please wait \d+|try again (in|after) \d+|failed to create)/i.test(L)){ err=L; break; }
   }
   o.err=err;
+  var al='';
+  var ael=[].slice.call(document.querySelectorAll('.alert-danger,.alert-warning,.text-danger,[role="alert"],.invalid-feedback')).filter(vis);
+  for(var q=0;q<ael.length;q++){ var at=(ael[q].innerText||'').replace(/\s+/g,' ').trim(); if(at.length>2&&at.length<200){ al=at; break; } }
+  o.alert=al;
   o.gate=/view a short ad/i.test(body);
   return o;
 })()

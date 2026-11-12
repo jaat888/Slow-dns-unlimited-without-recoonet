@@ -31,6 +31,8 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.Window
+import android.view.WindowManager
 import android.view.ViewGroup
 import android.widget.*
 import org.json.JSONArray
@@ -121,7 +123,7 @@ class MainActivity : Activity() {
                     val pw: EditText, val dns: EditText, val n: Spinner, val sw: Switch, val ctl: List<View>) {
     var role = ""; var srv = ""; var exp = 0L
     lateinit var info: TextView
-    lateinit var sumT: TextView; lateinit var sumI: TextView; lateinit var sumS: TextView; lateinit var sumV: View
+    lateinit var sumU: TextView; lateinit var sumT: TextView; lateinit var sumI: TextView; lateinit var sumS: TextView; lateinit var sumV: View
   }
 
   private val accs = mutableListOf<Acc>()
@@ -136,6 +138,7 @@ class MainActivity : Activity() {
   private lateinit var heroBtn: FrameLayout
   private lateinit var heroCard: LinearLayout
   private lateinit var statePill: TextView
+  private lateinit var hdrChip: TextView
   private lateinit var connectLbl: TextView
   private lateinit var powerIcon: PowerIcon
   private val settingCommits = ArrayList<() -> Unit>()
@@ -253,6 +256,56 @@ class MainActivity : Activity() {
     setCompoundDrawablesWithIntrinsicBounds(bar, null, null, null); compoundDrawablePadding = dp(10)
   }
 
+  /** Number picker for "Parallel tunnels": tapping opens a neat grid instead of the long system drop-down list. */
+  private inner class NumSpinner(c: android.content.Context) : Spinner(c) {
+    // Taps (and long presses) must never open the system drop-down list: always show the grid card
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+      if (e.actionMasked == MotionEvent.ACTION_UP) performClick()
+      return true
+    }
+    override fun performClick(): Boolean {
+      numDialog("Parallel tunnels", "More tunnels = more speed but more load.", 20, selectedItemPosition + 1) { setSelection(it - 1) }
+      return true
+    }
+  }
+
+  /** A small card with a grid of numbers 1..[count]. Used for Parallel tunnels and for the usage month start day. */
+  private fun numDialog(title: String, subtitle: String, count: Int, cur: Int, onPick: (Int) -> Unit) {
+    val dlg = android.app.Dialog(this)
+    dlg.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    val box = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL; background = rr(cardC, 24, strokeC); setPadding(dp(18), dp(18), dp(18), dp(14))
+    }
+    box.addView(tv(title, 17f, fg, true))
+    box.addView(tv(subtitle, 12f, sub).apply { layoutParams = lp(2) })
+    val cols = 5
+    val rows = (count + cols - 1) / cols
+    for (r in 0 until rows) {
+      val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = lp(if (r == 0) 14 else 8) }
+      for (k in 1..cols) {
+        val v = r * cols + k
+        val cellLp = LinearLayout.LayoutParams(0, dp(48), 1f).apply { setMargins(dp(3), 0, dp(3), 0) }
+        if (v > count) { line.addView(View(this), cellLp); continue }
+        line.addView(TextView(this).apply {
+          text = "$v"; gravity = Gravity.CENTER; textSize = 16f; setTypeface(typeface, Typeface.BOLD)
+          setTextColor(if (v == cur) ink else fg); background = rr(if (v == cur) acc else fieldC, 14)
+          layoutParams = cellLp
+          setOnClickListener { onPick(v); dlg.dismiss() }
+          pressable(this)
+        })
+      }
+      box.addView(line)
+    }
+    dlg.setContentView(box)
+    dlg.window?.apply {
+      setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
+      setLayout((resources.displayMetrics.widthPixels * 0.9f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT)
+      setGravity(Gravity.CENTER)
+      setDimAmount(0.45f)
+    }
+    dlg.show()
+  }
+
   private fun tintBg(c: Int, a: Int = 0x26) = (c and 0x00FFFFFF) or (a shl 24)
 
   private fun badge(g: String, size: Int = 30, c: Int = acc) = TextView(this).apply {
@@ -273,9 +326,10 @@ class MainActivity : Activity() {
   }
 
   private fun logo(sz: Int) = ImageView(this).apply {
-    setImageResource(if (dark) R.drawable.fg_dark else R.drawable.fg_light)
-    background = GradientDrawable().apply {
-      setColor(if (dark) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()); cornerRadius = dp(sz / 4).toFloat(); setStroke(dp(1), strokeC)
+    setImageResource(if (dark) R.drawable.logo_dark else R.drawable.logo_light)
+    clipToOutline = true
+    outlineProvider = object : android.view.ViewOutlineProvider() {
+      override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(sz / 4).toFloat()) }
     }
     layoutParams = LinearLayout.LayoutParams(dp(sz), dp(sz))
   }
@@ -305,17 +359,20 @@ class MainActivity : Activity() {
 
   private fun buildHome(): View {
     val col = pageCol()
-    val themeChip = TextView(this).apply {
-      text = if (dark) "LIGHT" else "DARK"; textSize = 12f; setTypeface(typeface, Typeface.BOLD); setTextColor(acc)
-      background = rr(fieldC, 20); setPadding(dp(14), dp(8), dp(14), dp(8))
-      setOnClickListener { P.edit().putBoolean("dark", !dark).apply(); icon(!dark); save(); recreate() }
+    hdrChip = TextView(this).apply {
+      text = "●  Offline"; textSize = 12f; setTypeface(typeface, Typeface.BOLD); setTextColor(sub)
+      background = rr(fieldC, 20); setPadding(dp(12), dp(7), dp(12), dp(7))
     }
     col.addView(row(
-      logo(40),
-      tv("Mollad DNS", 18f, fg, true).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12) } },
-      themeChip).apply { gravity = Gravity.CENTER_VERTICAL })
-    col.addView(tv("Your connection", 30f, fg, true).apply { layoutParams = lp(22) })
-    col.addView(tv("Choose an account. Connect on your terms.", 14f, sub).apply { layoutParams = lp(2) })
+      logo(44).apply { elevation = dp(3).toFloat() },
+      LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12) }
+        addView(tv("Mollad DNS", 19f, fg, true)); addView(tv("Secure DNS tunnel", 12f, sub))
+      },
+      hdrChip).apply { gravity = Gravity.CENTER_VERTICAL })
+    val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+    col.addView(tv(if (hour in 5..11) "Good morning" else if (hour in 12..16) "Good afternoon" else if (hour in 17..21) "Good evening" else "Hello", 28f, fg, true).apply { layoutParams = lp(26) })
+    col.addView(tv("Pick your accounts, then tap Connect.", 14f, sub).apply { layoutParams = lp(2) })
 
     // Status card
     statePill = tv("Disconnected", 12f, white, true).apply { setPadding(dp(14), dp(6), dp(14), dp(6)); background = rr(0x40FFFFFF, 20) }
@@ -402,7 +459,7 @@ class MainActivity : Activity() {
     }
     val dn = et("e.g. 8.8.8.8 or 1.1.1.1:53", a?.optString("d") ?: "")
     val list = (1..20).toList()
-    val n = Spinner(this).apply {
+    val n = NumSpinner(this).apply {
       adapter = object : ArrayAdapter<Int>(this@MainActivity, android.R.layout.simple_spinner_item, list) {
         override fun getView(p: Int, v: View?, g: ViewGroup): View = (super.getView(p, v, g) as TextView).also { it.setTextColor(fg) }
         override fun getDropDownView(p: Int, v: View?, g: ViewGroup): View =
@@ -444,7 +501,7 @@ class MainActivity : Activity() {
     }
     pw.layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
     c.addView(row(pw, eye).apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(6) })
-    c.addView(cap("UDP DNS resolver")); c.addView(dn)
+    c.addView(cap("DNS resolver (UDP / DoT / DoH)")); c.addView(dn)
     c.addView(row(tv("Parallel tunnels (1-20)", 13f, sub).apply { layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }, nWrap)
       .apply { gravity = Gravity.CENTER_VERTICAL; layoutParams = lp(14) })
     c.addView(row(clone, del))
@@ -453,6 +510,13 @@ class MainActivity : Activity() {
     val sT = tv("", 16f, fg, true)
     val sI = tv("", 12f, sub)
     val sS = tv("ON", 11f, white, true).apply { gravity = Gravity.CENTER; setPadding(dp(10), dp(4), dp(10), dp(4)) }
+    val sU = tv("Update", 11f, acc, true).apply {
+      gravity = Gravity.CENTER; setPadding(dp(10), dp(4), dp(10), dp(4)); background = rr(tintBg(acc, 0x26), 12)
+      (layoutParams ?: LinearLayout.LayoutParams(-2, -2)).also { (it as LinearLayout.LayoutParams).rightMargin = dp(6); layoutParams = it }
+      visibility = View.GONE
+      setOnClickListener { updateAcc(self) }
+      pressable(this)
+    }
     val sV = LinearLayout(this).apply {
       orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
       background = rr(cardC, 22, strokeC); elevation = dp(2).toFloat()
@@ -462,12 +526,13 @@ class MainActivity : Activity() {
         orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(12) }
         addView(sT); addView(sI)
       })
+      addView(sU)
       addView(sS)
       addView(tv("›", 24f, sub, true).apply { setPadding(dp(10), 0, 0, 0) })
       setOnClickListener { openDetail(self) }
       pressable(this)
     }
-    self.sumT = sT; self.sumI = sI; self.sumS = sS; self.sumV = sV
+    self.sumU = sU; self.sumT = sT; self.sumI = sI; self.sumS = sS; self.sumV = sV
     self.role = a?.optString("role") ?: ""; self.srv = a?.optString("srv") ?: ""; self.exp = a?.optLong("exp", 0L) ?: 0L
     sw.setOnCheckedChangeListener { v, ck ->
       if (VpnSvc.running && !rev) { rev = true; v.isChecked = !ck; rev = false; toast("Stop the VPN first, then switch accounts ON/OFF") }
@@ -493,6 +558,7 @@ class MainActivity : Activity() {
       a.info.text = parts.joinToString("  ·  ")
       a.info.setTextColor(if (a.exp > 0 && a.exp < now) red else acc)
       a.sumT.text = a.title.text
+      a.sumU.visibility = if (a.srv.isNotBlank()) View.VISIBLE else View.GONE
       a.sumI.text = if (parts.isEmpty()) a.ns.text.toString().ifBlank { "Not set up yet" } else parts.joinToString("  ·  ")
       a.sumI.setTextColor(if (a.exp > 0 && a.exp < now) red else sub)
       val ready = valid(a)
@@ -648,6 +714,8 @@ class MainActivity : Activity() {
     layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = dp(10) }
   }
 
+  private fun trName() = when (P.getString("tr", "udp")) { "dot" -> "DoT"; "doh" -> "DoH"; else -> "UDP" }
+
   private fun numRow(col: LinearLayout, title: String, desc: String, key: String, def: Int, lo: Int, hi: Int) {
     helpNotes.add(title to desc)
     val e = EditText(this).apply {
@@ -722,6 +790,23 @@ class MainActivity : Activity() {
     col.addView(s2)
 
     val s3 = card(); s3.addView(secTitle("Resolvers and rotation"))
+    val trVal = tv(trName(), 13f, acc, true)
+    tapRow(s3, "DNS transport", "How dnstt reaches the resolver. UDP: plain DNS on port 53, fastest. DoT: DNS inside TLS on port 853 (put the resolver as dns.google or 8.8.8.8, port 853 is added). DoH: DNS inside HTTPS on port 443 (put dns.google or a full link like https://dns.google/dns-query). DoT and DoH are harder to block but a little slower. The QPS limit works with UDP only. Applies at next START.", trVal) {
+      val (dlg, box) = sheet()
+      box.addView(tv("DNS transport", 17f, fg, true))
+      box.addView(tv("Applies at next START", 12f, sub).apply { layoutParams = lp(2) })
+      val cur = P.getString("tr", "udp") ?: "udp"
+      for ((k, t, d) in listOf(
+        Triple("udp", "UDP", "Plain DNS, port 53. Fastest."),
+        Triple("dot", "DoT", "DNS over TLS, port 853."),
+        Triple("doh", "DoH", "DNS over HTTPS, port 443. Hardest to block."))) {
+        box.addView(listRow(t, d, if (k == cur) ("Selected" to acc) else null) {
+          P.edit().putString("tr", k).apply(); trVal.text = trName(); toast("Transport: $t (next START)"); dlg.dismiss()
+        })
+      }
+      box.addView(row(pill("Close", fieldC, fg) { dlg.dismiss() }))
+      dlg.show()
+    }
     helpNotes.add("Resolver rotation" to "Comma-separated public resolvers (e.g. 8.8.8.8,1.1.1.1,9.9.9.9). Each new or reconnecting tunnel takes the next one in turn, so one resolver is rate-limited less. Leave empty to use only each account's own DNS. If your network only allows one fixed resolver, list just that one. Applies at next connect.")
     s3.addView(settingLabel("Resolver rotation").apply { layoutParams = lp(12) })
     val resE = et("8.8.8.8,1.1.1.1,9.9.9.9", P.getString("resolvers", "") ?: "")
@@ -932,6 +1017,9 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     setHero(state)
     heroBtn.isEnabled = pending == null
     statePill.text = when (state) { 2 -> "Connected"; 1 -> "Connecting..."; 3 -> "Disconnecting..."; else -> "Disconnected" }
+    hdrChip.text = when (state) { 2 -> "●  Online"; 1 -> "●  Connecting"; 3 -> "●  Closing"; else -> "●  Offline" }
+    hdrChip.setTextColor(when (state) { 2 -> 0xFF10B981.toInt(); 1, 3 -> 0xFFF59E0B.toInt(); else -> sub })
+    hdrChip.background = rr(if (state == 2) tintBg(0xFF10B981.toInt(), 0x26) else fieldC, 20)
     statusTv.text = when (state) { 2 -> "You are online"; 1 -> "Getting tunnels ready"; 3 -> "Closing tunnels"; else -> "Ready when you are" }
     VjManager.tick(this)
     if (::trafV.isInitialized && trafV.visibility == View.VISIBLE && (++trafTick % 3 == 0)) updateTraffic()
@@ -1308,7 +1396,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     trafTabs.forEachIndexed { i, t -> t.background = rr(if (i == trafTab) acc else fieldC, 14); t.setTextColor(if (i == trafTab) ink else fg) }
     val mins = listOf(10, 60, 1440)
     trafPeriods.forEachIndexed { i, t -> t.background = rr(if (mins[i] == trafMin) tintBg(acc, 0x33) else fieldC, 12); t.setTextColor(if (mins[i] == trafMin) acc else sub) }
-    trafPeriods.forEach { it.visibility = if (trafTab == 0) View.VISIBLE else View.GONE }
+    trafPeriods.forEach { it.visibility = if (trafTab == 1) View.VISIBLE else View.GONE }
   }
 
   private fun buildTraffic(): View {
@@ -1323,7 +1411,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     v.addView(tv("Traffic monitor", 26f, fg, true).apply { layoutParams = lp(14) })
     trafNote = tv("", 12.5f, sub).apply { layoutParams = lp(2) }
     v.addView(trafNote)
-    trafTabs = listOf("Apps", "Sites").mapIndexed { i, t ->
+    trafTabs = listOf("Usage", "Apps", "Sites").mapIndexed { i, t ->
       TextView(this).apply {
         text = t; textSize = 14f; gravity = Gravity.CENTER; setTypeface(typeface, Typeface.BOLD)
         layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { setMargins(dp(3), 0, dp(3), 0) }
@@ -1368,7 +1456,8 @@ The Connect button at the bottom connects or disconnects. In the card you see up
   }
 
   private fun updateTraffic() {
-    if (trafTab == 1) { renderSites(); return }
+    if (trafTab == 0) { renderUsage(); return }
+    if (trafTab == 2) { renderSites(); return }
     if (!hasUsageAccess()) { renderNeedUsage(); return }
     if (trafBusy) return
     trafBusy = true
@@ -1376,7 +1465,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     Thread {
       var items: List<TrafItem> = emptyList()
       try { items = queryApps(start) } catch (e: Throwable) { }
-      runOnUiThread { trafBusy = false; if (trafV.visibility == View.VISIBLE && trafTab == 0) renderApps(items) }
+      runOnUiThread { trafBusy = false; if (trafV.visibility == View.VISIBLE && trafTab == 1) renderApps(items) }
     }.start()
   }
 
@@ -1455,6 +1544,95 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     if (live.isNotEmpty()) trafNote.text = "● Active now: " + live.take(3).joinToString(", ") { it.name }
   }
 
+  private fun usageCard(label: String, v: LongArray) = LinearLayout(this).apply {
+    orientation = LinearLayout.VERTICAL; background = rr(cardC, 20, strokeC); elevation = dp(2).toFloat()
+    setPadding(dp(14), dp(12), dp(14), dp(12))
+    layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), dp(8), dp(4), dp(2)) }
+    addView(tv(label, 12f, sub))
+    addView(tv(fmtBytes(v[0] + v[1]), 20f, fg, true).apply { setPadding(0, dp(4), 0, dp(2)) })
+    addView(tv("↓ " + fmtBytes(v[1]) + "   ↑ " + fmtBytes(v[0]), 11f, sub))
+  }
+
+  /** Data that went through the VPN: this month, last month, today, last 24 hours, last 7 days. */
+  private fun renderUsage() {
+    Usage.sync(this)
+    trafNote.text = "Only the data that went through your VPN tunnels, counted by this app."
+    trafBody.removeAllViews()
+    val now = System.currentTimeMillis()
+    val day = P.getInt("cycday", 1).coerceIn(1, 28)
+    val cs = Usage.cycleStart(now, day)
+    val ce = Usage.nextStart(cs, day)
+    val ps = Usage.cycleStart(cs - 1, day)
+    val df = java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault())
+    val range = df.format(java.util.Date(cs)) + " - " + df.format(java.util.Date(ce - 1))
+    val month = Usage.sum(this, cs, now + 1)
+    val last = Usage.sum(this, ps, cs)
+    val today = Usage.sum(this, Usage.midnight(now, 0), now + 1)
+    val h24 = Usage.sum(this, now - 86_400_000L, now + 1)
+    val daysLeft = ((ce - now) / 86_400_000L).toInt() + 1
+
+    val hero = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(18), dp(20), dp(18)); layoutParams = lp(10)
+      background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0xFF0F2A6B.toInt(), 0xFF2563EB.toInt())).apply { cornerRadius = dp(26).toFloat() }
+      addView(tv("This month  ·  $range", 12.5f, whiteDim))
+      addView(tv(fmtBytes(month[0] + month[1]), 34f, white, true).apply { setPadding(0, dp(6), 0, dp(4)) })
+      addView(tv("↓ " + fmtBytes(month[1]) + "     ↑ " + fmtBytes(month[0]) + "     ·     new month in $daysLeft day(s)", 12.5f, whiteDim))
+    }
+    trafBody.addView(hero)
+    trafBody.addView(row(usageCard("Today", today), usageCard("Last 24 hours", h24)))
+    trafBody.addView(row(usageCard("Last month", last),
+      usageCard(if (VpnSvc.running) "This session" else "Last session", longArrayOf(Stats.up.get(), Stats.down.get()))))
+
+    // last 7 days
+    val totals = LongArray(7); val names = Array(7) { "" }
+    val dn = java.text.SimpleDateFormat("EEE", java.util.Locale.getDefault())
+    for (i in 6 downTo 0) {
+      val s0 = Usage.midnight(now, i); val e0 = Usage.midnight(now, i - 1)
+      val q = Usage.sum(this, s0, e0)
+      totals[6 - i] = q[0] + q[1]; names[6 - i] = dn.format(java.util.Date(s0))
+    }
+    var top = 1L
+    for (x in totals) if (x > top) top = x
+    val bars = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = LinearLayout.LayoutParams(-1, dp(140)).apply { topMargin = dp(10) } }
+    for (i in 0..6) {
+      val h = dp(6) + ((dp(78) * totals[i]) / top).toInt()
+      bars.addView(LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        layoutParams = LinearLayout.LayoutParams(0, -1, 1f)
+        addView(tv(if (totals[i] > 0) fmtBytes(totals[i]) else "", 9.5f, sub).apply { gravity = Gravity.CENTER })
+        addView(View(this@MainActivity).apply {
+          background = rr(if (i == 6) acc else tintBg(acc, 0x55), 6)
+          layoutParams = LinearLayout.LayoutParams(dp(20), h).apply { topMargin = dp(3); bottomMargin = dp(4) }
+        })
+        addView(tv(names[i], 10.5f, if (i == 6) fg else sub, i == 6))
+      })
+    }
+    trafBody.addView(card(10).apply { addView(secTitle("Last 7 days")); addView(bars) })
+
+    // the day the month starts on
+    trafBody.addView(LinearLayout(this).apply {
+      orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+      background = rr(cardC, 20, strokeC); setPadding(dp(16), dp(14), dp(16), dp(14)); layoutParams = lp(10)
+      addView(LinearLayout(this@MainActivity).apply {
+        orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+        addView(tv("Month starts on day", 14.5f, fg, true))
+        addView(tv("Set the day your data plan renews. This month and last month follow it.", 11.5f, sub))
+      })
+      addView(tv("$day  ›", 16f, acc, true))
+      setOnClickListener { numDialog("Month starts on day", "Your monthly usage starts again on this day (1-28).", 28, day) { P.edit().putInt("cycday", it).apply(); renderUsage() } }
+      pressable(this)
+    })
+    trafBody.addView(tv("Reset usage history", 12.5f, acc, true).apply {
+      setPadding(dp(4), dp(14), dp(4), dp(16))
+      setOnClickListener {
+        android.app.AlertDialog.Builder(this@MainActivity).setTitle("Reset usage history?")
+          .setMessage("This clears the VPN data counters for all days.")
+          .setPositiveButton("Reset") { _, _ -> Usage.clear(this@MainActivity); renderUsage() }
+          .setNegativeButton("Cancel", null).show()
+      }
+    })
+  }
+
   private fun renderNeedUsage() {
     trafNote.text = "Usage access is needed to see data per app."
     trafBody.removeAllViews()
@@ -1505,13 +1683,153 @@ The Connect button at the bottom connects or disconnects. In the card you see up
   private fun pickVpnJantitServer() {
     if (VjManager.isBusy()) { toast("VPNJantit is already working on it"); return }
     if (!Settings.canDrawOverlays(this)) { askOverlay(); return }
-    val names = VpnJantit.SERVERS.map { it.label }.toTypedArray()
-    android.app.AlertDialog.Builder(this).setTitle("Choose a server")
-      .setItems(names) { _, i ->
-        save()
-        val r = VjManager.launch(this, "", VpnJantit.SERVERS[i].code)
-        if (r == "perm") askOverlay() else if (r == "fail") toast("Could not start the account creator")
-        refresh()
-      }.show()
+    showCountryDialog()
+  }
+
+  /** A rounded card dialog in the app's theme. Returns the dialog and the box to fill. */
+  private fun sheet(): Pair<android.app.Dialog, LinearLayout> {
+    val dlg = android.app.Dialog(this)
+    dlg.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    val box = LinearLayout(this).apply {
+      orientation = LinearLayout.VERTICAL; background = rr(cardC, 24, strokeC); setPadding(dp(18), dp(18), dp(18), dp(14))
+    }
+    dlg.setContentView(box)
+    dlg.window?.apply {
+      setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
+      setLayout((resources.displayMetrics.widthPixels * 0.92f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT)
+      setGravity(Gravity.CENTER)
+      setDimAmount(0.45f)
+    }
+    return Pair(dlg, box)
+  }
+
+  private fun listRow(title: String, subtitle: String, chip: Pair<String, Int>?, dim: Boolean = false, onTap: () -> Unit) = LinearLayout(this).apply {
+    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+    background = rr(fieldC, 14); setPadding(dp(14), dp(11), dp(14), dp(11)); layoutParams = lp(6)
+    val colV = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
+    colV.addView(tv(title, 15f, fg, true))
+    if (subtitle.isNotBlank()) colV.addView(tv(subtitle, 12f, sub).apply { layoutParams = lp(2) })
+    addView(colV)
+    if (chip != null) addView(tv(chip.first, 11.5f, chip.second, true).apply {
+      background = rr(tintBg(chip.second, 0x26), 10); setPadding(dp(10), dp(4), dp(10), dp(4))
+    })
+    alpha = if (dim) 0.55f else 1f
+    setOnClickListener { onTap() }
+    pressable(this)
+  }
+
+  /** Step 1: pick a country. The list comes from the website; India is first. */
+  private fun showCountryDialog() {
+    val (dlg, box) = sheet()
+    box.addView(tv("Choose a country", 17f, fg, true))
+    val st = tv("Reading the site...", 12f, sub).apply { layoutParams = lp(2) }
+    box.addView(st)
+    val search = et("Search country")
+    box.addView(search)
+    val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    val sc = ScrollView(this).apply { addView(list) }
+    box.addView(sc, LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.42f).toInt()).apply { topMargin = dp(8) })
+    var all: List<VjCountry> = VjSite.FALLBACK_COUNTRIES
+    fun render() {
+      list.removeAllViews()
+      val q = search.text.toString().trim().lowercase()
+      val shown = all.filter { q.isEmpty() || it.name.lowercase().contains(q) }
+      if (shown.isEmpty()) list.addView(tv("No country found", 13f, sub).apply { setPadding(dp(4), dp(12), dp(4), dp(12)) })
+      for (c in shown) list.addView(listRow(c.name, "", null) { dlg.dismiss(); showServerDialog(c) })
+    }
+    search.addTextChangedListener(object : android.text.TextWatcher {
+      override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) { }
+      override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) { }
+      override fun afterTextChanged(s: android.text.Editable?) { render() }
+    })
+    box.addView(row(pill("Close", fieldC, fg) { dlg.dismiss() }))
+    render()
+    dlg.show()
+    VjSite.fetch(this, VjSite.COUNTRIES_URL, "free-ssh-") { html ->
+      if (!dlg.isShowing) return@fetch
+      val l = html?.let { VjSite.parseCountries(it) }.orEmpty()
+      if (l.isNotEmpty()) { all = l; st.text = "${l.size} countries - live from vpnjantit.com" }
+      else st.text = "Could not read the site, showing India only."
+      render()
+    }
+  }
+
+  /** Step 2: the servers of that country with Available / Full / Maintenance and how many days the account lasts. */
+  private fun showServerDialog(c: VjCountry) {
+    val (dlg, box) = sheet()
+    box.addView(tv("\u2039  Countries", 13f, acc, true).apply {
+      setPadding(0, 0, dp(12), dp(6)); setOnClickListener { dlg.dismiss(); showCountryDialog() }
+    })
+    box.addView(tv(c.name, 17f, fg, true))
+    val st = tv("Reading the site...", 12f, sub).apply { layoutParams = lp(2) }
+    box.addView(st)
+    val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    val sc = ScrollView(this).apply { addView(list) }
+    box.addView(sc, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+    val green = 0xFF10B981.toInt()
+
+    fun load() {
+      st.text = "Reading the site..."; list.removeAllViews()
+      VjSite.fetch(this, VjSite.countryUrl(c.slug), "create-free-account") { html ->
+        if (!dlg.isShowing) return@fetch
+        val l = html?.let { VjSite.parseServers(it) }.orEmpty()
+        list.removeAllViews()
+        if (l.isEmpty()) {
+          st.text = if (html == null) "Could not read the site. Check the internet and press Refresh." else "No free SSH server found for ${c.name}."
+          if (c.slug == "india") for (s in VpnJantit.SERVERS) list.addView(listRow(s.label, "Saved list, status not live", null) { dlg.dismiss(); startCreate(s.code, s.label) })
+          return@fetch
+        }
+        VjSite.remember(P, l)
+        st.text = "${l.count { it.status == "available" }} of ${l.size} available now - live from vpnjantit.com"
+        for (s in l) {
+          val chip = when (s.status) {
+            "available" -> "Available" to green
+            "full" -> "Full" to amber
+            "maintenance" -> "Maintenance" to red
+            else -> "Unknown" to sub
+          }
+          val parts = ArrayList<String>()
+          if (s.location.isNotBlank()) parts.add(s.location)
+          if (s.days > 0) parts.add("lasts ${s.days} day" + (if (s.days == 1) "" else "s"))
+          val dim = s.status == "full" || s.status == "maintenance"
+          list.addView(listRow(s.title, parts.joinToString(" \u00b7 "), chip, dim) {
+            when {
+              s.status == "full" -> toast("${s.title} is full. The site refills at about 7:30 PM IST")
+              s.status == "maintenance" -> toast("${s.title} is under maintenance")
+              else -> { dlg.dismiss(); startCreate(s.code, s.title) }
+            }
+          })
+        }
+      }
+    }
+    box.addView(row(pill("Refresh", fieldC, fg) { load() }, pill("Close", fieldC, fg) { dlg.dismiss() }))
+    dlg.show()
+    load()
+  }
+
+  /** The small "Update" button on an account card: makes a new user / password / expiry on the same server and writes it into this same card. */
+  private fun updateAcc(a: Acc) {
+    if (VjManager.isBusy()) { toast("VPNJantit is already working on it"); return }
+    if (!Settings.canDrawOverlays(this)) { askOverlay(); return }
+    if (a.srv.isBlank()) { toast("This account was not made by the app"); return }
+    save()
+    P.edit().putString("vj_updu", a.us.text.toString().trim()).apply()
+    when (VjManager.launch(this, a.role, a.srv, a.srv)) {
+      "perm" -> askOverlay()
+      "fail" -> toast("Could not start the account creator")
+      else -> toast("Updating ${a.srv}...")
+    }
+    refresh()
+  }
+
+  private fun startCreate(code: String, title: String) {
+    save()
+    when (VjManager.launch(this, "", code, title)) {
+      "perm" -> askOverlay()
+      "fail" -> toast("Could not start the account creator")
+      "busy" -> toast("VPNJantit is already working on it")
+      else -> toast("Creating an account on $title...")
+    }
+    refresh()
   }
 }

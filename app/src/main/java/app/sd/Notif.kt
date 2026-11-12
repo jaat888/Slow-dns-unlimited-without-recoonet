@@ -22,6 +22,12 @@ object Notif {
         nm.createNotificationChannel(alert)
     }
 
+    /** Large notification picture: the logo in the current theme (dark or light). */
+    fun logo(c: Context): android.graphics.drawable.Icon {
+        val dark = try { c.getSharedPreferences("a", 0).getBoolean("dark", false) } catch (e: Throwable) { false }
+        return android.graphics.drawable.Icon.createWithResource(c, if (dark) R.drawable.logo_dark else R.drawable.logo_light)
+    }
+
     /** Tapping the notification opens the app. */
     fun open(c: Context): PendingIntent {
         val i = Intent(c, MainActivity::class.java)
@@ -34,7 +40,7 @@ object Notif {
         try {
             channels(c)
             val n = Notification.Builder(c, CH_ALERT)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setSmallIcon(R.drawable.ic_stat).setLargeIcon(logo(c))
                 .setContentTitle(title)
                 .setContentText(text)
                 .setStyle(Notification.BigTextStyle().bigText(text))

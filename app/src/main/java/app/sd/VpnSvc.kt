@@ -69,7 +69,7 @@ class VpnSvc : VpnService() {
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     val act = Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "Disconnect", stopPi).build()
     return Notification.Builder(this, Notif.CH_VPN).setContentTitle("Mollad DNS").setContentText(t)
-      .setSmallIcon(android.R.drawable.ic_lock_lock).setOngoing(true).setContentIntent(Notif.open(this)).addAction(act).build()
+      .setSmallIcon(R.drawable.ic_stat).setLargeIcon(Notif.logo(this)).setOngoing(true).setContentIntent(Notif.open(this)).addAction(act).build()
   }
 
   // The DNS server the tunnel forwards phone DNS queries to (setting "fdns", default 1.1.1.1)
@@ -108,12 +108,13 @@ class VpnSvc : VpnService() {
   private fun nap(ms: Long, g: Int) { var t = 0L; while (t < ms && alive(g)) { Thread.sleep(250); t += 250 } }
 
   private fun begin(g: Int) {
-    Stats.reset(); Limit.load(getSharedPreferences("a", 0))
+    Stats.reset(); Usage.rebase(); Limit.load(getSharedPreferences("a", 0))
     qSent.set(0); qGot.set(0); relayPorts.clear()
     thread {
       var ls = 0; var lg = 0
       while (alive(g)) {
         nap(5000, g)
+        Usage.sync(this@VpnSvc)
         val s = qSent.get(); val gt = qGot.get(); val ds = s - ls; val dg = gt - lg; ls = s; lg = gt
         if (ds > 0) LogBus.dbg("DNS: ${ds / 5} queries/s sent, ${dg / 5} replies/s received (${dg * 100 / ds}%)")
       }
@@ -185,6 +186,7 @@ class VpnSvc : VpnService() {
   private fun stop() {
     if (!stopped.compareAndSet(false, true)) return
     on.set(false); gen.incrementAndGet()
+    try { Usage.sync(this) } catch (e: Throwable) {}
     if (inst === this) { running = false; inst = null; total = 0 }
     try { pool.shutdownNow() } catch (e: Exception) {}
     LogBus.add("VPN stop")
@@ -201,7 +203,22 @@ class VpnSvc : VpnService() {
     sess.forEach { it.disconnect() }; sess.clear(); busy.clear()
   }
 
-  private fun resolver(r: String) = if (r.contains(":")) r else "$r:53"
+  /** Which way dnstt talks to the resolver: udp, dot (TLS, port 853) or doh (HTTPS, port 443). Set in Settings. */
+  private fun transport(): String =
+    (getSharedPreferences("a", 0).getString("tr", "udp") ?: "udp").let { if (it == "dot" || it == "doh") it else "udp" }
+
+  /** Turns what the user typed into the form dnstt needs for the chosen transport. */
+  private fun resolver(r0: String): String {
+    val r = r0.trim()
+    return when (transport()) {
+      "dot" -> {
+        val h = r.removePrefix("tls://").removePrefix("https://").substringBefore('/')
+        if (!h.contains(":")) "$h:853" else if (h.endsWith(":53")) h.removeSuffix(":53") + ":853" else h
+      }
+      "doh" -> if (r.startsWith("https://")) r else "https://" + r.substringBefore('/').substringBefore(':') + "/dns-query"
+      else -> if (r.contains(":")) r else "$r:53"
+    }
+  }
 
   private class Link(val p: Process, val s: Session)
 
@@ -243,12 +260,13 @@ class VpnSvc : VpnService() {
     if (!bin.exists()) bin = File(applicationInfo.nativeLibraryDir, "libdnstt.so")
     val port = pickPort(pref)
     val qps = pr.getInt("qps", 0).coerceIn(0, 5000)
-    val target = if (qps > 0) "127.0.0.1:" + relayFor(rs, g) else rs
+    val tr = transport()
+    val target = if (tr == "udp" && qps > 0) "127.0.0.1:" + relayFor(rs, g) else rs   // the QPS relay only exists for UDP
     val t0 = System.currentTimeMillis()
-    LogBus.dbg("[$label] dnstt start | domain=$ns | dns-target=$target | local-port=$port | payload=$pay" +
+    LogBus.dbg("[$label] dnstt start | transport=${tr.uppercase()} | domain=$ns | dns-target=$target | local-port=$port | payload=$pay" +
       (if (dmtu > 0) " | dnstt-mtu=$dmtu" else "") +
       " | low-load=${pr.getBoolean("low", false)}" + (if (qps > 0) " | relay-qps-limit=$qps" else "") + " | timeout=${to / 1000}s")
-    val args = mutableListOf(bin.path, "-udp", target, "-pubkey", pub)
+    val args = mutableListOf(bin.path, "-$tr", target, "-pubkey", pub)
     if (dmtu > 0) { args.add("-mtu"); args.add(dmtu.toString()) }
     args.add(ns); args.add("127.0.0.1:$port")
     val pb = ProcessBuilder(args).redirectErrorStream(true).redirectOutput(File("/dev/null"))

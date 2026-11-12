@@ -84,11 +84,30 @@ object VjStore {
         return c.timeInMillis
     }
 
-    /** Puts a freshly created account into the saved list (replaces the old one of the same role). */
-    fun applyResult(p: SharedPreferences, role: String, ns: String, pub: String, u: String, pw: String, srv: String, exp: Long) {
+    /**
+     * Puts a freshly created account into the saved list.
+     * Same server twice is never kept: the account of that role, or any older account on the same server,
+     * gets the new user / password / expiry instead of a second card being added.
+     */
+    fun applyResult(p: SharedPreferences, role: String, ns: String, pub: String, u: String, pw: String, srv: String, exp: Long, prefU: String = "") {
         val a = accounts(p)
         val old = if (role.isNotEmpty()) roleObj(a, role) else null
         var target: JSONObject? = old
+        var sameSrv = false
+        if (target == null && prefU.isNotEmpty()) {
+            // the "Update" button of one card: that exact card gets the new account
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                if (o.optString("srv") == srv && o.optString("u") == prefU) { target = o; sameSrv = true; break }
+            }
+        }
+        if (target == null) {
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                val r = o.optString("role")
+                if (o.optString("srv") == srv && (r.isBlank() || r == role)) { target = o; sameSrv = true; break }
+            }
+        }
         if (target == null && a.length() > 0) {
             val last = a.getJSONObject(a.length() - 1)
             val blank = listOf("ns", "pk", "u", "p", "d").all { last.optString(it).isBlank() } && last.optString("role").isBlank()
@@ -96,13 +115,28 @@ object VjStore {
         }
         if (target != null) {
             target.put("ns", ns).put("pk", pub).put("u", u).put("p", pw)
-                .put("role", role).put("srv", srv).put("exp", exp).put("on", true)
+                .put("srv", srv).put("exp", exp).put("on", true)
+            if (role.isNotEmpty()) target.put("role", role)
             if (target.optString("d").isBlank()) target.put("d", "8.8.8.8")
-            if (old == null) target.put("n", 1)
-        } else {
-            a.put(JSONObject().put("ns", ns).put("pk", pub).put("u", u).put("p", pw).put("d", "8.8.8.8")
-                .put("n", 1).put("on", true).put("role", role).put("srv", srv).put("exp", exp))
+            if (old == null && !sameSrv) target.put("n", 1)
+            // older accounts of the same server (no role of their own) are replaced by this one; keep their tunnel count
+            var keepN = target.optInt("n", 1)
+            val out = JSONArray()
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                if (o !== target && o.optString("srv") == srv && o.optString("role").isBlank()) {
+                    keepN = maxOf(keepN, o.optInt("n", 1))
+                    LogBus.add("VPNJantit: the old $srv account was replaced by the new one")
+                    continue
+                }
+                out.put(o)
+            }
+            target.put("n", keepN)
+            p.edit().putString("acc2", out.toString()).apply()
+            return
         }
+        a.put(JSONObject().put("ns", ns).put("pk", pub).put("u", u).put("p", pw).put("d", "8.8.8.8")
+            .put("n", 1).put("on", true).put("role", role).put("srv", srv).put("exp", exp))
         p.edit().putString("acc2", a.toString()).apply()
     }
 }
@@ -129,7 +163,9 @@ object VjManager {
         val p = VjStore.prefs(c)
         val n = p.getLong("vj_next", 0L)
         val now = System.currentTimeMillis()
-        if (n > now) return "Next VPNJantit try in " + ((n - now) / 60_000L + 1) + " min"
+        val err = if (now - p.getLong("vj_lasterr_t", 0L) < 30 * 60_000L) (p.getString("vj_lasterr", "") ?: "") else ""
+        if (n > now) return (if (err.isNotBlank()) "Last try failed: $err\n" else "") + "Next VPNJantit try in " + ((n - now) / 60_000L + 1) + " min"
+        if (err.isNotBlank()) return "Last try failed: $err"
         return ""
     }
 
@@ -185,7 +221,7 @@ object VjManager {
     }
 
     /** role = "" for an account the user asked for by hand. */
-    fun launch(c: Context, role: String, srv: String): String {
+    fun launch(c: Context, role: String, srv: String, label: String = ""): String {
         if (isBusy()) return "busy"
         if (!Settings.canDrawOverlays(c)) return "perm"
         val p = VjStore.prefs(c)
@@ -193,7 +229,7 @@ object VjManager {
         p.edit().putString("vj_role", role).putLong("vj_next", 0L).apply()
         LogBus.add("VPNJantit: creating a ${if (role.isEmpty()) "" else role.uppercase() + " "}account on $srv")
         try {
-            VjService.start(c, srv)
+            VjService.start(c, srv, label)
         } catch (e: Throwable) {
             busy = false; status = ""
             LogBus.add("VPNJantit: could not start the creator: ${e.message}")
@@ -217,6 +253,8 @@ object VjManager {
         busy = false; status = ""
         val role = p.getString("vj_role", "") ?: ""
         p.edit().putString("vj_role", "").apply()
+        val updU = p.getString("vj_updu", "") ?: ""
+        p.edit().putString("vj_updu", "").apply()
         val srv = d.getStringExtra(VpnJantit.EXTRA_SERVER).orEmpty()
         val ok = d.getBooleanExtra(VpnJantit.R_OK, false)
         // Keep what the user typed in the app, then write the new account
@@ -224,7 +262,9 @@ object VjManager {
 
         if (!ok) {
             val err = d.getStringExtra(VpnJantit.R_ERROR).orEmpty().ifBlank { "Unknown error" }
-            LogBus.add("VPNJantit: FAILED - $err")
+            val detail = d.getStringExtra(VpnJantit.R_DETAIL).orEmpty()
+            LogBus.add("VPNJantit: FAILED - $err" + if (detail.isNotBlank()) " ($detail)" else "")
+            if (err != "Cancelled") p.edit().putString("vj_lasterr", err).putLong("vj_lasterr_t", System.currentTimeMillis()).apply()
             if (err == "Cancelled") { p.edit().putLong("vj_hold", System.currentTimeMillis() + 10 * 60_000L).apply(); ui(); return }
             if (Regex("full", RegexOption.IGNORE_CASE).containsMatchIn(err) && srv.isNotEmpty()) {
                 p.edit().putLong("vjfull_$srv", VjStore.nextReset()).apply()
@@ -234,7 +274,7 @@ object VjManager {
             }
             tries = 0
             toast(c, "VPNJantit: $err")
-            Notif.alert(c, 44, "VPNJantit could not create an account", err)
+            Notif.alert(c, 44, "VPNJantit could not create an account", err + if (detail.isNotBlank()) "\n$detail" else "")
             val retry = d.getLongExtra(VpnJantit.R_RETRY_MS, 0L)
             if (role.isNotEmpty()) {
                 if (retry > 0) schedule(c, retry, err) else p.edit().putLong("vj_hold", System.currentTimeMillis() + 10 * 60_000L).apply()
@@ -253,8 +293,10 @@ object VjManager {
             p.edit().putLong("vj_hold", System.currentTimeMillis() + 10 * 60_000L).apply()
             ui(); return
         }
-        VjStore.applyResult(p, role, ns, pub, u, pw, srv, exp)
-        p.edit().putLong("vj_last", System.currentTimeMillis()).apply()
+        VjStore.applyResult(p, role, ns, pub, u, pw, srv, exp, updU)
+        val took = d.getLongExtra(VpnJantit.R_TOOK, 0L)
+        p.edit().putLong("vj_last", System.currentTimeMillis()).putString("vj_lasterr", "").apply()
+        if (took > 0L) { p.edit().putLong("vj_took", took).apply(); LogBus.add("VPNJantit: it took " + (took / 60_000L) + "m " + ((took / 1000L) % 60L) + "s") }
         VjReceiver.schedule(c)
         val e = if (exp > 0) " - expires " + java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale.US).format(java.util.Date(exp)) else ""
         val label = (if (role.isNotEmpty()) role.uppercase() + " " else "") + srv + ": " + u + e
