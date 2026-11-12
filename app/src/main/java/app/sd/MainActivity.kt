@@ -326,7 +326,7 @@ class MainActivity : Activity() {
   }
 
   private fun logo(sz: Int) = ImageView(this).apply {
-    setImageResource(if (dark) R.drawable.logo_dark else R.drawable.logo_light)
+    setImageResource(R.drawable.logo_light)
     clipToOutline = true
     outlineProvider = object : android.view.ViewOutlineProvider() {
       override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(sz / 4).toFloat()) }
@@ -861,17 +861,43 @@ class MainActivity : Activity() {
     tapRow(s5, "Notifications", "Needed for the VPN notification, the captcha alert and the account-ready message. If it says Blocked, tap to open the app's notification settings.", notifVal) { askNotifications() }
     tapRow(s5, "Display over other apps", "Needed to create VPNJantit accounts in the background. The captcha pops up on top of whatever app you are using only when it needs you, then goes away. On some phones (Xiaomi, Oppo, Vivo) also allow Autostart and Show pop-ups in the app's permission page.", overlayVal) { askOverlay() }
     tapRow(s5, "Battery optimization", "Turn it off for this app so Android does not stop the VPN or the account creation in the background.", battVal) { askBattery() }
+    swRow(s5, "Hide notifications", "ON: the VPN connection and account-creation notifications become silent and collapsed (no status-bar icon, no sound, hidden on the lock screen). Android needs one notification for a running VPN, so it cannot be removed completely, but you will not see it any more. Captcha and account-ready alerts still show. On some phones you can also long-press the notification and turn the 'Hidden status' category off. Applies within 5 seconds.", "hidenotif", false) { if (it) "Connect notifications hidden" else "Connect notifications visible" }
+    val tileVal = tv("Add", 13f, acc, true)
+    tapRow(s5, "Quick settings tile", "A 'DNS' button for the notification shade (next to Wi-Fi, Bluetooth, data). Tap it to connect or disconnect the VPN without opening the app, and see from outside whether it is on. Android 13+ asks to add it right away. On older Android, pull down the shade, tap the pencil / Edit and drag the 'DNS' tile up.", tileVal) { addTile() }
     helpNotes.add("Theme" to "The launcher icon changes with the theme (it can take a few seconds to update).")
     col.addView(s5)
     updateSettingSummaries()
     return ScrollView(this).apply { addView(col) }
   }
 
-  private fun icon(d: Boolean) {
+  /** Asks Android to put the "DNS" tile into the quick settings (Android 13+), or explains how to add it by hand. */
+  private fun addTile() {
+    if (Build.VERSION.SDK_INT >= 33) {
+      try {
+        val sbm = getSystemService(android.app.StatusBarManager::class.java)
+        sbm.requestAddTileService(android.content.ComponentName(this, "app.sd.DnsTile"), "DNS",
+          android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_tile), mainExecutor) { r ->
+          runOnUiThread { toast(if (r == android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED || r == android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED) "DNS tile is in your quick settings" else "Not added. Add it by hand: pull down, tap Edit, drag DNS up") }
+        }
+        return
+      } catch (e: Throwable) { }
+    }
+    toast("Pull down the shade, tap Edit (pencil) and drag the DNS tile up")
+  }
+
+  private fun icon(@Suppress("UNUSED_PARAMETER") theme: Boolean) {
+    val d = false   // one icon only (the new light logo): the old dark / green one is gone everywhere
     val pm = packageManager
     fun set(n: String, en: Boolean) = pm.setComponentEnabledSetting(android.content.ComponentName(this, "app.sd.$n"),
       if (en) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP)
-    try { set(if (d) "DarkAlias" else "LightAlias", true); set(if (d) "LightAlias" else "DarkAlias", false) } catch (e: Exception) {}
+    try {
+      val want = if (d) "DarkAlias" else "LightAlias"
+      val cur = pm.getComponentEnabledSetting(android.content.ComponentName(this, "app.sd.$want"))
+      val other = pm.getComponentEnabledSetting(android.content.ComponentName(this, "app.sd." + (if (d) "LightAlias" else "DarkAlias")))
+      val wantOn = cur == PackageManager.COMPONENT_ENABLED_STATE_ENABLED || (cur == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && !d)
+      val otherOff = other == PackageManager.COMPONENT_ENABLED_STATE_DISABLED || (other == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT && d)
+      if (!(wantOn && otherOff)) { set(want, true); set(if (d) "LightAlias" else "DarkAlias", false) }
+    } catch (e: Exception) {}
   }
 
   // ---------- Help ----------
@@ -1128,7 +1154,9 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     setContentView(LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg); addView(frame); addView(buildNav()) })
     show(0)
     save()
+    icon(dark)   // the launcher / notification icon always matches the theme
     askBackground()
+    if (intent?.getBooleanExtra("tile_start", false) == true) { intent.removeExtra("tile_start"); h.postDelayed({ if (!VpnSvc.running) start() }, 400) }
     // start animation, only on a real app start (not when the theme is switched)
     if (b == null && !splashDone) {
       splashDone = true
@@ -1152,6 +1180,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
   }
   override fun onNewIntent(i: Intent?) {
     super.onNewIntent(i); setIntent(i)
+    if (i?.getBooleanExtra("tile_start", false) == true) { i.removeExtra("tile_start"); if (!VpnSvc.running) start() }
     if (i?.getBooleanExtra("vj_auto", false) == true) { P.edit().putLong("vj_hold", 0L).apply(); vjCheckUi(true) }
   }
   override fun onDestroy() {
@@ -2021,7 +2050,7 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     return Pair(dlg, box)
   }
 
-  private fun listRow(title: String, subtitle: String, chip: Pair<String, Int>?, dim: Boolean = false, onTap: () -> Unit) = LinearLayout(this).apply {
+  private fun listRow(title: String, subtitle: String, chip: Pair<String, Int>?, dim: Boolean = false, spin: Boolean = false, onTap: () -> Unit) = LinearLayout(this).apply {
     orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
     background = rr(fieldC, 14); setPadding(dp(14), dp(11), dp(14), dp(11)); layoutParams = lp(6)
     val colV = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
@@ -2030,6 +2059,11 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     addView(colV)
     if (chip != null) addView(tv(chip.first, 11.5f, chip.second, true).apply {
       background = rr(tintBg(chip.second, 0x26), 10); setPadding(dp(10), dp(4), dp(10), dp(4))
+    })
+    // small spinner while the live status is still being read
+    if (spin) addView(ProgressBar(this@MainActivity).apply {
+      isIndeterminate = true; indeterminateTintList = ColorStateList.valueOf(sub)
+      layoutParams = LinearLayout.LayoutParams(dp(18), dp(18))
     })
     alpha = if (dim) 0.55f else 1f
     setOnClickListener { onTap() }
@@ -2088,10 +2122,10 @@ The Connect button at the bottom connects or disconnects. In the card you see up
     val green = 0xFF10B981.toInt()
 
     fun load() {
-      st.text = "Reading the site... (saved servers shown meanwhile)"; list.removeAllViews()
+      st.text = "Loading live status..."; list.removeAllViews()
       val quick = VjSite.savedServers(P, c.slug)
-      if (quick.isNotEmpty()) for (s in quick) list.addView(listRow(s.title, (if (s.location.isNotBlank()) s.location + " \u00b7 " else "") + "saved, status not live", null) { dlg.dismiss(); startCreate(s.code, s.title) })
-      else if (c.slug == "india") for (s in VpnJantit.SERVERS) list.addView(listRow(s.label, "Saved list, status not live", null) { dlg.dismiss(); startCreate(s.code, s.label) })
+      if (quick.isNotEmpty()) for (s in quick) list.addView(listRow(s.title, s.location, null, spin = true) { dlg.dismiss(); startCreate(s.code, s.title) })
+      else if (c.slug == "india") for (s in VpnJantit.SERVERS) list.addView(listRow(s.label, "", null, spin = true) { dlg.dismiss(); startCreate(s.code, s.label) })
       VjSite.fetch(this, VjSite.countryUrl(c.slug), "create-free-account") { html ->
         if (!dlg.isShowing) return@fetch
         val l = html?.let { VjSite.parseServers(it) }.orEmpty()
@@ -2101,8 +2135,8 @@ The Connect button at the bottom connects or disconnects. In the card you see up
           val old = VjSite.savedServers(P, c.slug)
           if (old.isNotEmpty()) {
             st.text = st.text.toString() + " Showing the last saved servers."
-            for (s in old) list.addView(listRow(s.title, (if (s.location.isNotBlank()) s.location + " \u00b7 " else "") + "saved, status not live", null) { dlg.dismiss(); startCreate(s.code, s.title) })
-          } else if (c.slug == "india") for (s in VpnJantit.SERVERS) list.addView(listRow(s.label, "Saved list, status not live", null) { dlg.dismiss(); startCreate(s.code, s.label) })
+            for (s in old) list.addView(listRow(s.title, if (s.location.isNotBlank()) s.location + " \u00b7 saved" else "saved", null) { dlg.dismiss(); startCreate(s.code, s.title) })
+          } else if (c.slug == "india") for (s in VpnJantit.SERVERS) list.addView(listRow(s.label, "saved", null) { dlg.dismiss(); startCreate(s.code, s.label) })
           return@fetch
         }
         VjSite.remember(P, l)

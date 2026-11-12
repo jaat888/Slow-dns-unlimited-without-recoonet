@@ -69,6 +69,9 @@ class VpnSvc : VpnService() {
     val stopPi = PendingIntent.getService(this, 3, Intent(this, VpnSvc::class.java).setAction("stop"),
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     val act = Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "Disconnect", stopPi).build()
+    // "Hide notifications" ON: a silent, collapsed notification (Android needs one for a running VPN, but no status-bar icon, no sound, nothing on the lock screen)
+    if (Notif.hidden(this)) return Notification.Builder(this, Notif.CH_HIDE).setContentTitle("Mollad DNS").setContentText(t)
+      .setSmallIcon(R.drawable.ic_stat).setOngoing(true).setShowWhen(false).setVisibility(Notification.VISIBILITY_SECRET).setContentIntent(Notif.open(this)).build()
     return Notification.Builder(this, Notif.CH_VPN).setContentTitle("Mollad DNS").setContentText(t)
       .setSmallIcon(R.drawable.ic_stat).setLargeIcon(Notif.logo(this)).setOngoing(true).setContentIntent(Notif.open(this)).addAction(act).build().let { Notif.own(it) }
   }

@@ -12,11 +12,16 @@ object Notif {
     const val CH_VPN = "v"
     const val CH_WORK = "vj_work"
     const val CH_ALERT = "vj_alert"
+    /** Silent, collapsed channel: used for the VPN / account-progress notification when "Hide notifications" is ON. */
+    const val CH_HIDE = "hidden"
+
+    fun hidden(c: Context): Boolean = try { c.getSharedPreferences("a", 0).getBoolean("hidenotif", false) } catch (e: Throwable) { false }
 
     fun channels(c: Context) {
         val nm = c.getSystemService(NotificationManager::class.java) ?: return
         nm.createNotificationChannel(NotificationChannel(CH_VPN, "VPN connection", NotificationManager.IMPORTANCE_LOW))
         nm.createNotificationChannel(NotificationChannel(CH_WORK, "Account creation progress", NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(NotificationChannel(CH_HIDE, "Hidden status (silent)", NotificationManager.IMPORTANCE_MIN).apply { setShowBadge(false) })
         val alert = NotificationChannel(CH_ALERT, "Captcha and account alerts", NotificationManager.IMPORTANCE_HIGH)
         alert.enableVibration(true)
         nm.createNotificationChannel(alert)
@@ -25,7 +30,7 @@ object Notif {
     /** Large notification picture: the logo in the current theme (dark or light). */
     fun logo(c: Context): android.graphics.drawable.Icon {
         val dark = try { c.getSharedPreferences("a", 0).getBoolean("dark", false) } catch (e: Throwable) { false }
-        return android.graphics.drawable.Icon.createWithResource(c, if (dark) R.drawable.logo_dark else R.drawable.logo_light)
+        return android.graphics.drawable.Icon.createWithResource(c, R.drawable.logo_light)
     }
 
     /**

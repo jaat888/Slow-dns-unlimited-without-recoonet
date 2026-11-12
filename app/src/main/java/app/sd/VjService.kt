@@ -65,14 +65,6 @@ class VjService : Service() {
     private var built = false
     private var uiCtx: Context? = null
 
-    // Our own captcha box (the hCaptcha of the site is shown on a clean page of ours, not cut out of the site's page)
-    private var capWeb: WebView? = null
-    private var ownShown = false
-    private var ownReady = false
-    private var ownBad = false
-    private var ownAt = 0L
-    private var hcSk = ""
-
     private var running = false
     private var done = false
     private var server = "in6"
@@ -98,13 +90,15 @@ class VjService : Service() {
     private var busy = false
     private var busyAt = 0L
     private var userHiddenUntil = 0L
+    private var lastDismiss = 0L
+    private var lastMute = 0L
 
     private val poll = object : Runnable {
         override fun run() {
             if (done) return
             try { tick() } catch (e: Throwable) { }
             // Faster checks once the form is filled or the captcha is open, so "Create" is pressed right after the captcha is solved
-            ui.postDelayed(this, if (revealed || filledAt > 0L) 350L else 800L)
+            ui.postDelayed(this, if (revealed) 200L else if (filledAt > 0L) 300L else 600L)
         }
     }
 
@@ -246,7 +240,7 @@ class VjService : Service() {
         head.orientation = LinearLayout.HORIZONTAL
         head.gravity = Gravity.CENTER_VERTICAL
         val logo = ImageView(ctx)
-        logo.setImageResource(if (dark) R.drawable.logo_dark else R.drawable.logo_light)
+        logo.setImageResource(R.drawable.logo_light)
         logo.clipToOutline = true
         logo.outlineProvider = object : ViewOutlineProvider() {
             override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(11).toFloat()) }
@@ -319,29 +313,18 @@ class VjService : Service() {
         btns.addView(pillBtn(ctx, "Cancel", if (dark) 0xFF3A1D24.toInt() else 0xFFFDECEC.toInt(), 0xFFEF4444.toInt()) { finishCancelled() })
         card.addView(btns, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(14) })
 
-        // One neat sheet in the middle of the screen: the card on top, the captcha box under it.
-        // It is never wider than 420dp and stays clear of the status bar and the navigation bar.
+        // One neat sheet: the card on top, the captcha box under it. The box takes ALL the height that is left,
+        // so the captcha (instruction line, pictures, buttons) is never cut. Never wider than 420dp, clear of the bars.
         val dm = resources.displayMetrics
         val barTop = sysBar("status_bar_height")
         val barBottom = sysBar("navigation_bar_height")
-        val sheetW = minOf(dm.widthPixels - dp(32), dp(420))
-        val freeH = dm.heightPixels - barTop - barBottom - dp(48)
-        val holderH = (freeH * 0.62f).toInt().coerceIn(dp(280), dp(560))
-        // The page is laid out on a bigger "virtual screen" and drawn smaller, so the whole captcha (its instruction line on top,
-        // the pictures, the buttons below) fits in the box. Touches still land on the right spot.
-        val layoutW = maxOf(sheetW, dp(430))
-        val layoutH = maxOf(holderH, dp(600))
-        val fit = minOf(sheetW.toFloat() / layoutW, holderH.toFloat() / layoutH)
-        holder.removeView(web)
-        holder.addView(web, FrameLayout.LayoutParams(layoutW, layoutH))
-        web.pivotX = 0f; web.pivotY = 0f
-        web.scaleX = fit; web.scaleY = fit
+        val sheetW = minOf(dm.widthPixels - dp(24), dp(420))
         val col = LinearLayout(ctx)
         col.orientation = LinearLayout.VERTICAL
         col.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        col.addView(holder, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, holderH).apply { topMargin = dp(10) })
-        root.addView(col, FrameLayout.LayoutParams(sheetW, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER).apply {
-            topMargin = barTop + dp(12); bottomMargin = barBottom + dp(12)
+        col.addView(holder, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(8) })
+        root.addView(col, FrameLayout.LayoutParams(sheetW, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = barTop + dp(6); bottomMargin = barBottom + dp(6)
         })
 
         val lp = WindowManager.LayoutParams(
@@ -439,10 +422,9 @@ class VjService : Service() {
             return
         }
         try { if (built) { timerTv.text = fmtDur(now - t0); setStep(if (revealed) 1 else if (clicks > 0) 2 else 0) } } catch (e: Exception) { }
-        evalJs(MUTE_JS)
-        if (ownShown) {
-            if (!ownReady && now - ownAt > 20_000L) { ownBad = true; hide() }   // our page did not start: use the old way
-        } else if (revealed && !gateOpen) evalJs(CROP_JS) else evalJs(DISMISS_JS)
+        if (now - lastMute > 3000L) { lastMute = now; evalJs(MUTE_JS) }
+        if (revealed && !gateOpen) evalJs(CROP_JS)
+        else if (clicks == 0 && now - lastDismiss > 1500L) { lastDismiss = now; evalJs(DISMISS_JS) }
         // A probe that never answered (WebView frozen) must not block the machine forever
         if (busy && now - busyAt > 8000L) busy = false
         if (busy) return
@@ -481,7 +463,6 @@ class VjService : Service() {
         val hc = o.optBoolean("hc")
         val hcDone = o.optBoolean("hcDone")
         val err = o.optString("err")
-        o.optString("sk").takeIf { it.isNotBlank() }?.let { hcSk = it }
         if (formSince == 0L) formSince = now
         lastGood = now
         val alert = o.optString("alert")
@@ -502,8 +483,6 @@ class VjService : Service() {
 
         // 3) A real captcha needs the user (hCaptcha, or a Cloudflare box that does not finish by itself)
         if (ts == "wait") { if (waitSince == 0L) waitSince = now } else waitSince = 0L
-        // hCaptcha: shown on a clean page of ours (full size, nothing cut). If that cannot work, the old way below is used.
-        if (hc && hcSk.isNotBlank() && !ownBad) { if (!revealed) revealOwn(); return }
         val needUser = hc || (ts == "wait" && now - waitSince > 8_000L)
         if (needUser) { reveal(); return }
         if (revealed && !gateOpen) hide()
@@ -613,7 +592,6 @@ class VjService : Service() {
     }
 
     private fun hide() {
-        closeOwn()
         if (!revealed) return
         revealed = false
         evalJs(UNCROP_JS)
@@ -623,68 +601,6 @@ class VjService : Service() {
         Notif.cancel(this, NID_CAPTCHA)
         try { hintTv.text = waitHint() } catch (e: Exception) { }
         say("Continuing in the background...")
-    }
-
-    // ───────────────────────── our own captcha box ─────────────────────────
-
-    private inner class CapBridge {
-        @android.webkit.JavascriptInterface fun ready() { ui.post { ownReady = true } }
-        @android.webkit.JavascriptInterface fun done(t: String) { ui.post { onOwnToken(t) } }
-        @android.webkit.JavascriptInterface fun err(e: String) { ui.post { LogBus.dbg("VPNJantit: own captcha error: $e"); if (ownShown) { ownBad = true; hide() } } }
-    }
-
-    @android.annotation.SuppressLint("SetJavaScriptEnabled")
-    private fun revealOwn() {
-        if (revealed || SystemClock.elapsedRealtime() < userHiddenUntil) return
-        val ctx = uiCtx ?: return
-        try {
-            val w = WebView(ctx)
-            val s = w.settings
-            s.javaScriptEnabled = true
-            s.domStorageEnabled = true
-            CookieManager.getInstance().setAcceptThirdPartyCookies(w, true)
-            w.addJavascriptInterface(CapBridge(), "Android")
-            w.setBackgroundColor(Color.WHITE)
-            val sk = JSONObject.quote(hcSk)
-            val page = "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-                "<style>html,body{margin:0;background:#fff}body{display:flex;justify-content:center;padding-top:10px}</style>" +
-                "<script src=\"https://js.hcaptcha.com/1/api.js?render=explicit&onload=ld\" async defer></script>" +
-                "<script>function ld(){try{hcaptcha.render('c',{sitekey:" + sk + ",callback:function(t){Android.done(t)}," +
-                "'error-callback':function(e){Android.err(String(e))}});Android.ready();}catch(x){Android.err(String(x))}}</script>" +
-                "</head><body><div id=\"c\"></div></body></html>"
-            // The page is loaded as if it were the site's own page, so the captcha accepts it for that site
-            w.loadDataWithBaseURL("https://www.vpnjantit.com/create-free-account", page, "text/html", "utf-8", null)
-            holder.addView(w, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            web.alpha = 0.01f        // the site's page keeps running behind, just not shown
-            capWeb = w
-            ownShown = true; ownReady = false; ownAt = SystemClock.elapsedRealtime()
-            showUi("Solve the captcha in the box below")
-            try { hintTv.text = "Only this check needs you. The rest continues by itself." } catch (e: Exception) { }
-        } catch (e: Throwable) {
-            ownBad = true
-            LogBus.dbg("VPNJantit: own captcha could not start: ${e.message}")
-        }
-    }
-
-    private fun closeOwn() {
-        val w = capWeb ?: return
-        capWeb = null
-        ownShown = false
-        try { holder.removeView(w) } catch (e: Exception) { }
-        try { w.stopLoading(); w.destroy() } catch (e: Exception) { }
-        try { web.alpha = 1f } catch (e: Exception) { }
-    }
-
-    /** The captcha was solved in our box: the answer goes into the site's page, then "Create" is pressed by the normal steps. */
-    private fun onOwnToken(t: String) {
-        if (done || t.isBlank()) return
-        closeOwn()
-        evalJs(
-            "(function(t){var n=0;[].forEach.call(document.querySelectorAll('textarea[name=\"h-captcha-response\"],input[name=\"h-captcha-response\"],textarea[name=\"g-recaptcha-response\"],input[name=\"g-recaptcha-response\"]'),function(e){try{e.value=t;n++;}catch(x){}});" +
-                "try{var w=document.querySelector('.h-captcha');var cb=w&&w.getAttribute('data-callback');if(cb&&typeof window[cb]==='function')window[cb](t);}catch(x){}return n;})(" + JSONObject.quote(t) + ")"
-        )
-        say("Captcha solved, creating the account...")
-        hide()
     }
 
     /**
@@ -735,8 +651,6 @@ class VjService : Service() {
         ui.removeCallbacksAndMessages(null)
         try { sendBroadcast(result) } catch (e: Throwable) { }
         Notif.cancel(this, NID_CAPTCHA)
-        try { capWeb?.let { it.stopLoading(); it.destroy() } } catch (e: Exception) { }
-        capWeb = null
         if (built) {
             try { wm?.removeView(root) } catch (e: Exception) { }
             try {
@@ -774,6 +688,9 @@ class VjService : Service() {
             Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "Cancel", cancelPi
         ).build()
         val since = if (t0 > 0L) System.currentTimeMillis() - (SystemClock.elapsedRealtime() - t0) else System.currentTimeMillis()
+        if (Notif.hidden(this)) return Notification.Builder(this, Notif.CH_HIDE)
+            .setSmallIcon(R.drawable.ic_stat).setContentTitle("VPNJantit account").setContentText(text)
+            .setOngoing(true).setShowWhen(false).setVisibility(Notification.VISIBILITY_SECRET).setContentIntent(Notif.open(this)).build()
         return Notification.Builder(this, Notif.CH_WORK)
             .setWhen(since).setShowWhen(true).setUsesChronometer(true)
             .setSmallIcon(R.drawable.ic_stat).setLargeIcon(Notif.logo(this))
@@ -895,7 +812,7 @@ class VjService : Service() {
     'body div[style*="position: fixed"]:not(:has(iframe[src*="hcaptcha.com"])):not(:has(iframe[src*="challenges.cloudflare.com"])):not(.h-captcha):not(.cf-turnstile){display:none !important}'+
     'body *{visibility:hidden !important}'+
     '.h-captcha,.h-captcha *,.cf-turnstile,.cf-turnstile *,iframe[src*="hcaptcha.com"],iframe[src*="challenges.cloudflare.com"]{visibility:visible !important}'+
-    '.h-captcha,.cf-turnstile{position:fixed !important;top:16px !important;left:50% !important;transform:translateX(-50%) !important;z-index:2147483647 !important;background:#fff !important;padding:14px !important;box-sizing:content-box !important;border-radius:12px !important;min-width:300px !important;min-height:70px !important}'+
+    '.h-captcha,.cf-turnstile{position:fixed !important;top:50% !important;left:50% !important;transform:translate(-50%,-50%) !important;z-index:2147483647 !important;background:#fff !important;padding:14px !important;box-sizing:content-box !important;border-radius:12px !important;min-width:300px !important;min-height:70px !important}'+
     'dialog,[role="dialog"],[aria-modal="true"]{display:none !important}'+
     '[role="dialog"]:has(iframe[src*="hcaptcha.com"]),[role="dialog"]:has(iframe[src*="challenges.cloudflare.com"]),[role="dialog"]:has(.cf-turnstile),[role="dialog"]:has(.h-captcha){display:block !important}';
   /* The site's own pop-up ad ("Free VPN access" with an X) sits on top of the captcha. It is a fixed element added by the ad script,
@@ -915,8 +832,24 @@ class VjService : Service() {
       x.style.setProperty('display','none','important');
     }
   }catch(err){}
-  var e=document.querySelector('iframe[src*="hcaptcha.com"],.h-captcha,.cf-turnstile,iframe[src*="challenges.cloudflare.com"]');
-  if(e){ e.scrollIntoView({block:'center'}); }
+  /* The picture challenge of hCaptcha is placed by hCaptcha itself and can start above the top edge (its instruction line is cut).
+     If any part is outside the view, its container is moved so the whole challenge is inside. */
+  try{
+    var fr=[].slice.call(document.querySelectorAll('iframe[src*="hcaptcha.com"]'));
+    for(var q=0;q<fr.length;q++){
+      var r=fr[q].getBoundingClientRect(); if(r.height<150) continue;
+      var vh=window.innerHeight, vw=window.innerWidth;
+      var dy=0, dx=0;
+      if(r.height>=vh-8) dy=4-r.top; else if(r.top<4) dy=4-r.top; else if(r.bottom>vh-4) dy=(vh-4)-r.bottom;
+      if(r.left<2) dx=2-r.left; else if(r.right>vw-2) dx=(vw-2)-r.right;
+      if(Math.abs(dy)>2||Math.abs(dx)>2){
+        var c=fr[q]; while(c.parentElement && c.parentElement!==document.body && c.parentElement!==document.documentElement) c=c.parentElement;
+        var ay=parseFloat(c.getAttribute('data-vjy')||'0')+dy, ax=parseFloat(c.getAttribute('data-vjx')||'0')+dx;
+        c.setAttribute('data-vjy',ay); c.setAttribute('data-vjx',ax);
+        c.style.setProperty('transform','translate('+ax+'px,'+ay+'px)','important');
+      }
+    }
+  }catch(e2){}
   return 'ok';
 })()
 """

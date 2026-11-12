@@ -16,10 +16,10 @@
   </queries>
   <application android:label="Mollad DNS" android:icon="@mipmap/ic_light" android:roundIcon="@mipmap/ic_light" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
     <activity android:name=".MainActivity" android:exported="false" android:label="Mollad DNS"/>
-    <activity-alias android:name=".DarkAlias" android:targetActivity=".MainActivity" android:exported="true" android:enabled="true" android:label="Mollad DNS" android:icon="@mipmap/ic_dark">
+    <activity-alias android:name=".DarkAlias" android:targetActivity=".MainActivity" android:exported="true" android:enabled="false" android:label="Mollad DNS" android:icon="@mipmap/ic_light">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity-alias>
-    <activity-alias android:name=".LightAlias" android:targetActivity=".MainActivity" android:exported="true" android:enabled="false" android:label="Mollad DNS" android:icon="@mipmap/ic_light">
+    <activity-alias android:name=".LightAlias" android:targetActivity=".MainActivity" android:exported="true" android:enabled="true" android:label="Mollad DNS" android:icon="@mipmap/ic_light">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity-alias>
     <!-- Creates the VPNJantit account in the background (own process, so the VPN stays safe if the WebView crashes) -->
@@ -27,6 +27,10 @@
     <!-- Receives status lines and results from the :vj process -->
     <receiver android:name=".VjBridge" android:exported="false"><intent-filter><action android:name="app.sd.VJ_STATUS"/><action android:name="app.sd.VJ_RESULT"/></intent-filter></receiver>
     <receiver android:name=".VjReceiver" android:exported="false"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter></receiver>
+    <!-- Quick settings tile "DNS" -->
+    <service android:name=".DnsTile" android:exported="true" android:label="DNS" android:icon="@drawable/ic_tile" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+      <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE"/></intent-filter>
+    </service>
     <service android:name=".VpnSvc" android:exported="false" android:permission="android.permission.BIND_VPN_SERVICE">
       <intent-filter><action android:name="android.net.VpnService"/></intent-filter>
     </service>
